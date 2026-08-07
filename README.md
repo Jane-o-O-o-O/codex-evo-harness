@@ -42,13 +42,39 @@ Codex 很强，但原始运行过程通常分散在终端输出、会话文件�
 
 ### 环境要求
 
-- Node.js 22 或更高版本（开发和从源码运行时需要）。
 - 能写入 rollout trace 的 Codex CLI 或本地 Codex App runtime。
-- Windows 用户可以安装 Electron 桌面版；只使用已打包的安装程序时不需要单独安装 Node.js。
+- Windows 用户可以直接安装 Electron 安装程序；只使用已打包的安装程序时不需要单独安装 Node.js。
+- 从源码运行时需要 Node.js 22 或更高版本。
 
-### 第一步：给 Codex 指定 trace 目录
+### 第一步：安装并启动桌面程序
 
-在启动 Codex 之前设置用户级环境变量。Windows PowerShell 示例：
+Windows 用户运行安装程序后，从桌面快捷方式或开始菜单打开 **Codex Trace Viewer**。首次启动会出现设置向导，它会：
+
+1. 自动检测 PATH 中的 Codex CLI，并显示可用版本。
+2. 优先复用已有的 `CODEX_ROLLOUT_TRACE_ROOT`、`CODEX_HOME` 和日报目录；也可以点击“选择目录”改用其他位置。
+3. 保存 Codex CLI 路径、trace 目录、日报目录和 Codex home。
+4. 在 Windows 下可选写入用户级 `CODEX_ROLLOUT_TRACE_ROOT` 与 `CODEX_INSIGHTS_ROOT`，让之后新启动的 CLI/App 自动写入同一个目录。
+
+向导只在第一次启动时出现。配置文件保存在 Electron 的用户数据目录，原始 trace 和日报仍保存在你选择的目录中。已经运行的 Codex 进程需要完全退出后重新启动，才能读取新的用户级环境变量。
+
+从源码运行时：
+
+```powershell
+npm install
+npm run desktop
+```
+
+要生成 Windows 安装程序：
+
+```powershell
+npm run dist:win
+```
+
+安装程序会输出到 `dist/`，默认创建桌面快捷方式和开始菜单快捷方式。安装后的 Electron 应用可以直接启动，不需要再执行 PowerShell 脚本。
+
+### 手动设置（可选）
+
+如果你不使用向导，或者需要给 CI/服务进程配置固定目录，可以手动设置用户级环境变量。Windows PowerShell 示例：
 
 ```powershell
 $traceRoot = "E:\interesting\codex\.codex-traces"
@@ -68,24 +94,7 @@ $env:CODEX_INSIGHTS_ROOT = "E:\codex-insights"
 codex
 ```
 
-### 第二步：打开 Electron 桌面工作台
-
-首次从源码运行时安装 Electron 依赖：
-
-```powershell
-npm install
-npm run desktop
-```
-
 Electron 主进程会自动启动本地 viewer 服务，使用随机 loopback 端口创建原生 `BrowserWindow`，关闭桌面窗口时也会关闭对应服务，不依赖 Edge 标签页，也不会和 `4319` 上的独立服务冲突。
-
-要生成 Windows 安装程序：
-
-```powershell
-npm run dist:win
-```
-
-安装程序会输出到 `dist/`，默认创建桌面快捷方式和开始菜单快捷方式。安装后的 Electron 应用可以直接启动，不需要再执行 PowerShell 脚本。
 
 如果当前机器不方便安装 Electron，项目仍保留一个轻量的 Edge App 兼容入口：
 
@@ -97,7 +106,7 @@ open-desktop.cmd
 
 <http://127.0.0.1:4319/>
 
-### 第三步：产生一条会话
+### 第二步：产生一条会话
 
 运行一次 Codex，完成一个任务，然后回到工作台刷新。你会看到类似下面的目录：
 
@@ -243,6 +252,7 @@ server.mjs                本地 HTTP API、bundle 发现、归约和调度器
 insights.mjs              每日复盘聚合、设置、日报持久化
 llm-review.mjs            OpenAI 兼容 LLM 分析链路
 desktop/main.mjs          Electron 主进程和原生窗口生命周期
+desktop/wizard.html/js    首次启动向导、Codex 检测和目录选择
 public/index.html         工作台页面结构
 public/app.js             路由、状态、交互和日报渲染
 public/trace-detail.js    Trace 树和节点详情归一化
@@ -256,7 +266,9 @@ fixtures/                 小型确定性测试 bundle
 
 ### 页面显示没有 session
 
-确认 Codex 是在设置 `CODEX_ROLLOUT_TRACE_ROOT` 之后重新启动的，并检查 trace 目录下是否出现新的 `trace-*` 文件夹。当前工具只读取本地 rollout trace，不会从普通聊天记录推测 session。
+在设置向导中确认 trace 目录正确，并完全退出后重新启动 Codex。检查该目录下是否出现新的 `trace-*` 文件夹。当前工具只读取本地 rollout trace，不会从普通聊天记录推测 session。
+
+如果向导没有自动找到 Codex CLI，可以点击“选择文件”指定 `codex.exe` 或 `codex.cmd`，也可以填写 PATH 中的命令名 `codex`。重新检测只更新 Codex 字段，不会覆盖你已经填写的目录。
 
 ### 打开 Raw session 时出现 409
 

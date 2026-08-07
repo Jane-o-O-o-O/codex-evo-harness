@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Trace Viewer 初始设置</title>
+    <link rel="stylesheet" href="wizard.css" />
+  </head>
+  <body>
+    <div class="wizard-shell">
+      <header class="wizard-header">
+        <div class="brand"><span class="brand-mark">C</span><strong>Codex Trace Viewer</strong></div>
+        <span class="step-label">首次启动设置</span>
+      </header>
+
+      <main class="wizard-main">
+        <section class="intro">
+          <p class="eyebrow">LOCAL OBSERVABILITY</p>
+          <h1>把 Codex 的工作轨迹接入你的桌面工作台</h1>
+          <p>只需要设置一次 trace 目录和 Codex CLI。之后每次会话都会自动出现在日期、session 和 Trace 视图中。</p>
+        </section>
+
+        <section class="detection-panel" aria-live="polite">
+          <div class="detection-icon">⌘</div>
+          <div class="detection-copy">
+            <strong>Codex CLI 检测</strong>
+            <span id="codex-detection">正在检测本机 Codex…</span>
+            <small id="codex-version"></small>
+          </div>
+          <button id="detect-codex" class="secondary-button" type="button">重新检测</button>
+        </section>
+
+        <form id="setup-form" novalidate>
+          <section class="form-section">
+            <div class="section-heading"><span class="section-number">01</span><div><h2>Trace 目录</h2><p>选择 Codex 写入 rollout trace 的目录。</p></div></div>
+            <div class="path-field"><input id="trace-root" name="traceRoot" type="text" spellcheck="false" required /><button type="button" data-browse="traceRoot">选择目录</button></div>
+            <small id="trace-helper">向导会优先使用环境变量或本机已存在的 trace 目录；没有时会创建新目录。</small>
+          </section>
+
+          <section class="form-section">
+            <div class="section-heading"><span class="section-number">02</span><div><h2>Codex CLI</h2><p>用于归约 Raw session 和读取完整 Trace。</p></div></div>
+            <div class="path-field"><input id="codex-executable" name="codexExecutable" type="text" spellcheck="false" required /><button type="button" data-browse="codexExecutable">选择文件</button></div>
+            <small id="codex-helper">检测不到时可以填写 PATH 中的命令名，例如 codex。</small>
+          </section>
+
+          <section class="form-section compact-section">
+            <div class="section-heading"><span class="section-number">03</span><div><h2>数据与 Codex home</h2><p>日报、设置和 Skill/MCP 统计的位置。</p></div></div>
+            <label class="field-label" for="data-root">日报目录</label>
+            <div class="path-field"><input id="data-root" name="dataRoot" type="text" spellcheck="false" required /><button type="button" data-browse="dataRoot">选择目录</button></div>
+            <label class="field-label" for="codex-home">Codex home <span>可选</span></label>
+            <div class="path-field"><input id="codex-home" name="codexHome" type="text" spellcheck="false" /><button type="button" data-browse="codexHome">选择目录</button></div>
+          </section>
+
+          <label class="environment-option"><input id="persist-environment" type="checkbox" checked /><span><strong>同步设置 Codex 用户环境变量</strong><small>Windows 下会写入 CODEX_ROLLOUT_TRACE_ROOT 和 CODEX_INSIGHTS_ROOT。已经运行的 Codex 需要重新启动。</small></span></label>
+
+          <div id="setup-status" class="setup-status" role="alert"></div>
+          <div class="wizard-actions"><span>所有路径和 trace 数据都保存在本机。</span><button class="primary-button" type="submit">完成设置并打开工作台</button></div>
+        </form>
+      </main>
+    </div>
+    <script src="wizard.js"></script>
+  </body>
+</html>

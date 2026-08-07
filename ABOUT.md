@@ -22,6 +22,9 @@ the final answer arrived.
   available next.
 - **Progressive detail**: date and session lists stay scannable; node payloads
   load on demand.
+- **Guided setup**: the native Electron app detects Codex CLI, lets people pick
+  a trace directory, and stores the local configuration before opening the
+  viewer.
 
 ## Relationship to Codex and Langfuse
 
@@ -32,9 +35,9 @@ code.
 
 ## Scope
 
-This repository contains the standalone viewer, daily review logic, Windows
-installer, fixtures, and tests. It intentionally does not include a Codex source
-checkout or local trace data.
+This repository contains the standalone viewer, native Electron shell, first-run
+setup wizard, daily review logic, Windows installer, fixtures, and tests. It
+intentionally does not include a Codex source checkout or local trace data.
 
 ## License and Ownership
 

@@ -189,10 +189,17 @@ async function readBody(request) {
 function runReducer(codex, bundleDir) {
   return new Promise((resolve, reject) => {
     const args = ["debug", "trace-reduce", bundleDir];
-    const executable = process.platform === "win32" ? process.env.ComSpec || "cmd.exe" : codex;
-    const executableArgs = process.platform === "win32"
-      ? ["/d", "/c", codex, ...args]
-      : args;
+    const powershellScript = process.platform === "win32" && path.extname(codex).toLowerCase() === ".ps1";
+    const executable = process.platform !== "win32"
+      ? codex
+      : powershellScript
+        ? "powershell.exe"
+        : process.env.ComSpec || "cmd.exe";
+    const executableArgs = process.platform !== "win32"
+      ? args
+      : powershellScript
+        ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", codex, ...args]
+        : ["/d", "/c", codex, ...args];
     const child = spawn(executable, executableArgs, {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
