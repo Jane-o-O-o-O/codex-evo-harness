@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("codexDesktop", {
   getSetupState: () => ipcRenderer.invoke("desktop:setup-state"),

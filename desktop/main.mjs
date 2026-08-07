@@ -83,7 +83,7 @@ async function startDesktopApp() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: path.join(desktopRoot, "preload.mjs"),
+      preload: path.join(desktopRoot, "preload.cjs"),
     },
   });
   mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
@@ -166,7 +166,7 @@ async function showSetupWizard(initialConfig) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        preload: path.join(desktopRoot, "preload.mjs"),
+        preload: path.join(desktopRoot, "preload.cjs"),
       },
     });
     setupWindow.on("closed", () => {
