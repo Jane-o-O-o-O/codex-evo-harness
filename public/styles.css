@@ -71,9 +71,10 @@ button { cursor: pointer; }
 .days-list, .session-table { max-width: 1180px; margin: 0 auto; overflow: hidden; border: 1px solid #2b2b2f; border-radius: 6px; background: #141416; }
 .day-row, .session-row { width: 100%; min-height: 68px; display: grid; align-items: center; gap: 14px; padding: 9px 16px; border: 0; border-bottom: 1px solid #26262a; color: #c4c4ca; text-align: left; background: transparent; }
 .day-row { grid-template-columns: 36px minmax(240px, 1fr) 90px 90px 20px; }
-.session-row { grid-template-columns: 36px minmax(230px, 2fr) 74px minmax(100px, 1fr) 66px 58px 62px 20px; }
+.session-row { grid-template-columns: 36px minmax(230px, 2fr) 74px minmax(100px, 1fr) 66px 58px 62px auto 20px; cursor: pointer; }
 .day-row:last-child, .session-row:last-child { border-bottom: 0; }
 .day-row:hover, .session-row:hover { background: #1e1e21; }
+.session-row:focus-visible { outline: 2px solid #a855f7; outline-offset: -2px; }
 .day-icon, .session-type-icon { display: grid; width: 31px; height: 31px; place-items: center; border: 1px solid #3c3c42; border-radius: 5px; color: #a855f7; background: #211629; font-size: 15px; }
 .session-type-icon { color: #22c55e; background: #11251a; }
 .day-main, .session-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
@@ -83,13 +84,23 @@ button { cursor: pointer; }
 .day-stat strong { font-size: 14px; }
 .day-stat small { color: #686871; font-size: 9px; text-transform: uppercase; }
 .row-arrow { color: #64646c; font-size: 19px; }
-.session-state { justify-self: start; padding: 4px 7px; border: 1px solid #3b3b40; border-radius: 4px; color: #8b8b94; font-size: 9px; text-transform: uppercase; }
+.session-state { justify-self: start; padding: 4px 7px; border: 1px solid #3b3b40; border-radius: 4px; color: #8b8b94; font-size: 9px; text-transform: uppercase; white-space: nowrap; }
 .session-state.ready { border-color: #275d3c; color: #4ade80; background: #11251a; }
+.session-state.completed { border-color: #275d3c; color: #4ade80; background: #11251a; }
 .session-state.running { border-color: #70591d; color: #facc15; background: #2e260f; }
+.session-state.reducing { border-color: #70591d; color: #facc15; background: #2e260f; }
+.session-state.raw { border-color: #4a4a54; color: #a1a1aa; background: #1c1c20; }
 .session-state.failed, .session-state.cancelled, .session-state.aborted { border-color: #71333a; color: #fb7185; background: #31171b; }
 .session-state.corrupt { border-color: #71333a; color: #fb7185; background: #31171b; }
 .session-model, .session-node-count, .session-token-count, .session-duration { overflow: hidden; color: #85858d; text-overflow: ellipsis; white-space: nowrap; font: 10px Consolas, monospace; }
-.session-table-head { display: grid; grid-template-columns: minmax(230px, 2fr) 74px minmax(100px, 1fr) 66px 58px 62px 20px; gap: 14px; max-width: 1180px; margin: 0 auto; padding: 8px 16px; color: #66666e; font-size: 9px; font-weight: 750; text-transform: uppercase; }
+.session-action { justify-self: start; color: #777780; font-size: 10px; white-space: nowrap; }
+.session-action.complete { color: #4ade80; }
+.session-action.pending { color: #a1a1aa; }
+.session-reduce-button { min-width: 62px; padding: 5px 8px; border: 1px solid #62418a; border-radius: 4px; color: #d8b4fe; background: #251a32; font-size: 10px; white-space: nowrap; }
+.session-reduce-button:hover { border-color: #a855f7; color: #fff; background: #382348; }
+.session-reduce-button:disabled { border-color: #4a4a54; color: #85858d; background: #1c1c20; cursor: wait; }
+.session-reduce-button.retry { border-color: #8a414e; color: #fda4af; background: #32171b; }
+.session-table-head { display: grid; grid-template-columns: minmax(230px, 2fr) 74px minmax(100px, 1fr) 66px 58px 62px 68px 20px; gap: 14px; max-width: 1180px; margin: 0 auto; padding: 8px 16px 8px 66px; color: #66666e; font-size: 9px; font-weight: 750; text-transform: uppercase; }
 .list-controls { display: flex; max-width: 1180px; align-items: center; gap: 8px; margin: 0 auto 10px; }
 .list-controls .standalone { flex: 1; margin: 0; }
 .session-search.standalone { max-width: 1180px; height: 38px; margin: 0 auto 10px; padding: 0 11px; border: 1px solid #303034; border-radius: 5px; }
@@ -205,7 +216,8 @@ pre { max-height: 460px; margin: 0; padding: 12px; overflow: auto; border: 1px s
 .loading-state, .reduction-card, .empty-detail { display: grid; min-height: 220px; place-items: center; align-content: center; gap: 9px; padding: 24px; color: #85858d; text-align: center; }
 .reduction-card h2, .empty-detail h2 { margin: 0; color: #d4d4d8; font-size: 16px; }
 .reduction-card p, .empty-detail p { max-width: 480px; margin: 0; line-height: 1.65; font-size: 12px; }
-.reduction-error { max-width: 560px; padding: 8px 10px; border: 1px solid #53343b; border-radius: 4px; color: #fda4af; background: #241316; font-size: 10px; }
+.reduction-pending { padding: 8px 10px; border: 1px solid #4a4a54; border-radius: 4px; color: #aaaab2; background: #1c1c20; font-size: 11px; }
+.reduction-error { max-width: min(620px, 100%); padding: 8px 10px; border: 1px solid #53343b; border-radius: 4px; color: #fda4af; background: #241316; font: 10px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
 .state-icon { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #7041a6; border-radius: 9px; color: #d8b4fe; background: #291b39; font-size: 18px; }
 .primary-action, .retry-button { padding: 8px 13px; border: 1px solid #7e22ce; border-radius: 5px; color: #fff; background: #7e22ce; font-size: 11px; }
 .primary-action:disabled { opacity: .65; cursor: wait; }
@@ -350,9 +362,11 @@ dialog::backdrop { background: #000a; }
   .session-table-head { display: none; }
   .list-controls { display: grid; grid-template-columns: 1fr 1fr; }
   .list-controls .standalone { grid-column: 1 / -1; }
-  .session-row { grid-template-columns: 31px minmax(0, 1fr) 62px 20px; gap: 9px; padding: 10px; }
+  .session-row { grid-template-columns: 31px minmax(0, 1fr) 62px auto 20px; gap: 9px; padding: 10px; }
   .session-model, .session-node-count, .session-token-count, .session-duration { display: none; }
   .session-state { font-size: 8px; }
+  .session-reduce-button { min-width: 55px; padding: 5px 6px; font-size: 9px; }
+  .session-table-head { display: none; }
   .browser-page { padding: 22px 12px 42px; }
   .browser-header h1 { font-size: 21px; }
   .browser-header p { font-size: 11px; }
@@ -451,7 +465,7 @@ dialog::backdrop { background: #000a; }
 .graph-title { justify-content: flex-start; gap: 5px; }
 .graph-title button { margin-left: auto; }
 .graph-canvas { padding: 0; }
-.graph-viewport { min-height: 100%; overflow: auto; padding: 16px 18px 24px; }
+.graph-viewport { position: relative; min-height: 100%; overflow: hidden; padding: 16px 18px 24px; }
 .graph-stage { position: relative; min-height: 220px; }
 .graph-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .graph-edge { fill: none; stroke: #4a4a54; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
@@ -634,7 +648,7 @@ dialog::backdrop { background: #000a; }
 .graph-expanded-meta { color: #696971; font-size: 9px; }
 .graph-viewport { cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
 .graph-viewport.is-panning { cursor: grabbing; }
-.graph-stage { transform-origin: 0 0; }
+.graph-stage { transform-origin: 0 0; will-change: transform; }
 .graph-edge { stroke: #54545e; stroke-width: 1.3; }
 .graph-card { z-index: 1; }
 .graph-card.active { z-index: 2; }

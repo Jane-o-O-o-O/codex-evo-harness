@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { access, readFile, readdir, stat } from "node:fs/promises";
+import { access, open, readFile, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -69,6 +69,16 @@ export function safeChild(root, child) {
   return resolved;
 }
 
+function decorateTraceState(trace, bundle) {
+  trace.rollout_status = bundle.rolloutStatus;
+  trace.turn_status = bundle.turnStatus;
+  trace.display_status = bundle.displayStatus;
+  trace.turn_started_at_unix_ms = bundle.turnStartedAtUnixMs;
+  trace.turn_ended_at_unix_ms = bundle.turnEndedAtUnixMs;
+  trace.turn_duration_ms = bundle.turnDurationMs;
+  return trace;
+}
+
 async function readJson(file) {
   return JSON.parse(await readFile(file, "utf8"));
 }
@@ -82,7 +92,125 @@ async function exists(file) {
   }
 }
 
-async function discoverBundles(traceRoot) {
+const rawEventTailBytes = 256 * 1024;
+
+function normalizeEventStatus(value) {
+  if (typeof value !== "string") return null;
+  const status = value.toLowerCase();
+  if (["complete", "completed", "success", "succeeded"].includes(status)) return "completed";
+  if (["cancelled", "canceled"].includes(status)) return "cancelled";
+  if (["abort", "aborted"].includes(status)) return "aborted";
+  if (["fail", "failed", "error"].includes(status)) return "failed";
+  if (["running", "started", "in_progress"].includes(status)) return "running";
+  return null;
+}
+
+function eventTurnState(event) {
+  const payload = event.payload || {};
+  const eventType = payload.type === "protocol_event_observed" ? payload.event_type : payload.type;
+  const eventTime = Number.isFinite(event.wall_time_unix_ms) ? event.wall_time_unix_ms : null;
+  if (eventType === "codex_turn_started" || eventType === "turn_started") {
+    return { status: "running", startedAtUnixMs: eventTime, endedAtUnixMs: null };
+  }
+  if (eventType === "codex_turn_ended") {
+    return { status: normalizeEventStatus(payload.status) || "completed", startedAtUnixMs: null, endedAtUnixMs: eventTime };
+  }
+  if (eventType === "turn_complete") {
+    return { status: "completed", startedAtUnixMs: null, endedAtUnixMs: eventTime };
+  }
+  if (eventType === "turn_aborted") {
+    return { status: "aborted", startedAtUnixMs: null, endedAtUnixMs: eventTime };
+  }
+  return null;
+}
+
+function isTerminalTurnStatus(status) {
+  return ["completed", "cancelled", "aborted", "failed"].includes(status);
+}
+
+async function readRawEventState(bundleDir) {
+  const eventLogPath = path.join(bundleDir, "trace.jsonl");
+  let eventLogInfo;
+  try {
+    eventLogInfo = await stat(eventLogPath);
+  } catch {
+    return null;
+  }
+  if (!eventLogInfo.isFile() || eventLogInfo.size === 0) return null;
+
+  const bytesToRead = Math.min(eventLogInfo.size, rawEventTailBytes);
+  const handle = await open(eventLogPath, "r");
+  try {
+    const buffer = Buffer.alloc(bytesToRead);
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, eventLogInfo.size - bytesToRead);
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/);
+    let rolloutEnded = false;
+    let rolloutStatus = null;
+    let latestTurn = null;
+    let currentTurnStartedAtUnixMs = null;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        const payload = event.payload || {};
+        if (payload.type === "rollout_ended") {
+          rolloutEnded = true;
+          rolloutStatus = normalizeEventStatus(payload.status) || "completed";
+        }
+        const turn = eventTurnState(event);
+        if (!turn) continue;
+        if (turn.status === "running") {
+          currentTurnStartedAtUnixMs = turn.startedAtUnixMs;
+          latestTurn = { ...turn };
+        } else {
+          latestTurn = {
+            ...turn,
+            startedAtUnixMs: currentTurnStartedAtUnixMs ?? latestTurn?.startedAtUnixMs ?? null,
+          };
+          currentTurnStartedAtUnixMs = null;
+        }
+      } catch {
+        // Ignore a partial line while Codex is appending the event.
+      }
+    }
+    const turnEnded = Boolean(latestTurn && isTerminalTurnStatus(latestTurn.status));
+    const turnDurationMs = latestTurn?.startedAtUnixMs != null && latestTurn.endedAtUnixMs != null
+      ? Math.max(0, latestTurn.endedAtUnixMs - latestTurn.startedAtUnixMs)
+      : null;
+    return {
+      rolloutEnded,
+      rolloutStatus,
+      turnStatus: latestTurn?.status || null,
+      turnStartedAtUnixMs: latestTurn?.startedAtUnixMs ?? null,
+      turnEndedAtUnixMs: latestTurn?.endedAtUnixMs ?? null,
+      turnDurationMs,
+      turnEnded,
+      mtimeMs: eventLogInfo.mtimeMs,
+      size: eventLogInfo.size,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function rawLogStable(bundleDir, waitMs) {
+  const eventLogPath = path.join(bundleDir, "trace.jsonl");
+  let before;
+  try {
+    before = await stat(eventLogPath);
+  } catch {
+    return false;
+  }
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  try {
+    const after = await stat(eventLogPath);
+    return before.size === after.size && before.mtimeMs === after.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+async function discoverBundles(traceRoot, reductionStates = null) {
   if (!(await exists(traceRoot))) return [];
   const entries = await readdir(traceRoot, { withFileTypes: true });
   const bundles = [];
@@ -96,6 +224,18 @@ async function discoverBundles(traceRoot) {
       const statePath = path.join(bundleDir, "state.json");
       const stateInfo = (await exists(statePath)) ? await stat(statePath) : null;
       const summary = stateInfo ? await summarizeState(statePath) : null;
+      const reduction = reductionStates?.get(bundleDir);
+      const rawEventState = await readRawEventState(bundleDir);
+      const rawComplete = Boolean(rawEventState?.rolloutEnded || rawEventState?.turnEnded);
+      const needsReduction = Boolean(stateInfo && rawEventState && rawEventState.mtimeMs > stateInfo.mtimeMs && rawComplete);
+      const reduced = Boolean(stateInfo) && !needsReduction;
+      const complete = reduced || rawComplete;
+      const reductionStatus = reduced ? "ready" : reduction?.status || "raw";
+      const rolloutStatus = summary?.status || (stateInfo ? "corrupt" : rawEventState?.rolloutStatus || (rawEventState?.rolloutEnded ? "completed" : "running"));
+      const turnStatus = rawEventState?.turnStatus || (rolloutStatus === "completed" ? "completed" : null);
+      const displayStatus = reduced
+        ? rolloutStatus === "corrupt" ? "corrupt" : rawEventState?.rolloutEnded ? rolloutStatus : turnStatus || rolloutStatus
+        : reductionStatus === "failed" ? "failed" : reductionStatus === "reducing" ? "reducing" : "raw";
       bundles.push({
         id: entry.name,
         traceId: manifest.trace_id,
@@ -103,7 +243,13 @@ async function discoverBundles(traceRoot) {
         rootThreadId: manifest.root_thread_id,
         startedAtUnixMs: manifest.started_at_unix_ms,
         endedAtUnixMs: summary?.endedAtUnixMs ?? null,
-        status: stateInfo ? (summary?.status || "corrupt") : "raw",
+        status: reduced ? (summary?.status || "corrupt") : reductionStatus === "failed" ? "failed" : reductionStatus === "reducing" ? "reducing" : "raw",
+        rolloutStatus,
+        turnStatus,
+        displayStatus,
+        turnStartedAtUnixMs: rawEventState?.turnStartedAtUnixMs ?? null,
+        turnEndedAtUnixMs: rawEventState?.turnEndedAtUnixMs ?? null,
+        turnDurationMs: rawEventState?.turnDurationMs ?? null,
         durationMs: summary?.durationMs ?? null,
         firstUserMessage: summary?.firstUserMessage || "",
         models: summary?.models || [],
@@ -112,7 +258,12 @@ async function discoverBundles(traceRoot) {
         outputTokens: summary?.outputTokens ?? 0,
         reasoningTokens: summary?.reasoningTokens ?? 0,
         project: summary?.project || "",
-        reducedAtUnixMs: stateInfo?.mtimeMs ?? null,
+        reducedAtUnixMs: reduced ? stateInfo.mtimeMs : null,
+        reductionStatus,
+        reductionError: reduction?.error || null,
+        complete,
+        needsReduction,
+        canReduce: !reduced && complete && reductionStatus !== "reducing",
       });
     } catch {
       // A writer may be between its atomic filesystem operations. Retry next poll.
@@ -249,36 +400,90 @@ export function createViewerServer(options) {
   options = {
     dataRoot: path.join(here, ".codex-insights"),
     codexHome: process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    reductionPollMs: 1_500,
+    reductionStabilityMs: 250,
+    runReducerImpl: runReducer,
     fetchImpl: globalThis.fetch,
     ...options,
   };
   const reducing = new Map();
+  const reductionChecks = new Map();
+  const reductionStates = new Map();
   let settingsPromise = loadSettings(options.dataRoot);
 
-  async function reduceBundle(bundle) {
+  function reductionError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.length > 600 ? `${message.slice(0, 599)}…` : message;
+  }
+
+  function startReduction(bundle, { force = false } = {}) {
+    const bundleDir = safeChild(options.traceRoot, bundle.id);
+    let pending = reducing.get(bundleDir);
+    if (pending) return pending;
+    const previous = reductionStates.get(bundleDir);
+    if (!force && previous?.status === "failed") {
+      return Promise.reject(new Error(previous.error));
+    }
+    reductionStates.set(bundleDir, { status: "reducing", startedAtUnixMs: Date.now() });
+    pending = Promise.resolve()
+      .then(() => options.runReducerImpl(options.codex, bundleDir))
+      .then(() => reductionStates.delete(bundleDir))
+      .catch((error) => {
+        reductionStates.set(bundleDir, { status: "failed", error: reductionError(error), failedAtUnixMs: Date.now() });
+        throw error;
+      })
+      .finally(() => reducing.delete(bundleDir));
+    reducing.set(bundleDir, pending);
+    return pending;
+  }
+
+  async function reduceBundle(bundle, { force = false } = {}) {
     const bundleDir = safeChild(options.traceRoot, bundle.id);
     const statePath = path.join(bundleDir, "state.json");
-    if (await exists(statePath)) {
+    if (await exists(statePath) && !bundle.needsReduction) {
       const trace = await readJson(statePath);
+      decorateTraceState(trace, bundle);
       Object.defineProperty(trace, "__bundleId", { value: bundle.id, enumerable: false });
       return trace;
     }
-    let pending = reducing.get(bundleDir);
-    if (!pending) {
-      pending = runReducer(options.codex, bundleDir).finally(() => reducing.delete(bundleDir));
-      reducing.set(bundleDir, pending);
+    if (!bundle.complete) {
+      const error = new Error("会话仍在采集，完成后会自动归约");
+      error.code = "TRACE_ACTIVE";
+      throw error;
     }
-    await pending;
+    await startReduction(bundle, { force });
     const trace = await readJson(statePath);
+    decorateTraceState(trace, bundle);
     Object.defineProperty(trace, "__bundleId", { value: bundle.id, enumerable: false });
     return trace;
   }
 
+  async function queueCompletedRawBundles() {
+    const bundles = await discoverBundles(options.traceRoot, reductionStates);
+    for (const bundle of bundles) {
+      if (bundle.reducedAtUnixMs || !bundle.complete || bundle.status === "reducing" || bundle.status === "failed") continue;
+      const bundleDir = safeChild(options.traceRoot, bundle.id);
+      if (reductionChecks.has(bundleDir)) continue;
+      const check = rawLogStable(bundleDir, options.reductionStabilityMs)
+        .then((stable) => stable ? startReduction(bundle).catch(() => {}) : undefined)
+        .finally(() => reductionChecks.delete(bundleDir));
+      reductionChecks.set(bundleDir, check);
+    }
+  }
+
   async function runDailyReview(date = localDate(), markScheduled = false) {
-    const bundles = await discoverBundles(options.traceRoot);
+    await queueCompletedRawBundles();
+    const bundles = await discoverBundles(options.traceRoot, reductionStates);
     const dayBundles = bundles.filter((bundle) => localDate(bundle.startedAtUnixMs) === date);
     const traces = [];
-    for (const bundle of dayBundles) traces.push(await reduceBundle(bundle));
+    for (const bundle of dayBundles) {
+      if (!bundle.complete) continue;
+      try {
+        traces.push(await reduceBundle(bundle));
+      } catch (error) {
+        console.error(`trace reduction failed for ${bundle.id}: ${reductionError(error)}`);
+      }
+    }
     const [inventory, storedReviews] = await Promise.all([
       collectInventory(options.codexHome),
       listReviews(options.dataRoot),
@@ -363,7 +568,8 @@ export function createViewerServer(options) {
         return;
       }
       if (url.pathname === "/api/traces") {
-        json(response, 200, { traces: await discoverBundles(options.traceRoot) });
+        void queueCompletedRawBundles().catch((error) => console.error(`trace reduction queue failed: ${reductionError(error)}`));
+        json(response, 200, { traces: await discoverBundles(options.traceRoot, reductionStates) });
         return;
       }
       const stateMatch = url.pathname.match(/^\/api\/traces\/([^/]+)$/);
@@ -375,19 +581,47 @@ export function createViewerServer(options) {
           json(response, 404, { error: "trace bundle not found" });
           return;
         }
-        if (url.searchParams.get("reduce") === "1" && !(await exists(statePath))) {
-          let pending = reducing.get(bundleDir);
-          if (!pending) {
-            pending = runReducer(options.codex, bundleDir).finally(() => reducing.delete(bundleDir));
-            reducing.set(bundleDir, pending);
-          }
-          await pending;
-        }
-        if (!(await exists(statePath))) {
-          json(response, 409, { error: "state.json is missing", canReduce: true });
+        const bundles = await discoverBundles(options.traceRoot, reductionStates);
+        let bundle = bundles.find((item) => item.id === id);
+        if (!bundle) {
+          json(response, 404, { error: "trace bundle not found" });
           return;
         }
-        json(response, 200, await readJson(statePath));
+        const shouldReduce = url.searchParams.get("reduce") === "1";
+        if (shouldReduce && (bundle.needsReduction || !(await exists(statePath)))) {
+          try {
+            await reduceBundle(bundle, { force: true });
+            bundle = (await discoverBundles(options.traceRoot, reductionStates)).find((item) => item.id === id) || bundle;
+          } catch (error) {
+            if (error?.code === "TRACE_ACTIVE") {
+              json(response, 409, { error: error.message, canReduce: false, complete: false, status: "raw" });
+              return;
+            }
+            json(response, 500, { error: reductionError(error), canReduce: true, complete: bundle.complete, status: "failed" });
+            return;
+          }
+        }
+        if (bundle.needsReduction && !shouldReduce) {
+          json(response, 409, {
+            error: bundle.reductionError || "Trace 有新的已完成 turn，等待归约",
+            canReduce: bundle.canReduce,
+            complete: bundle.complete,
+            status: bundle.status,
+          });
+          return;
+        }
+        if (!(await exists(statePath))) {
+          json(response, 409, {
+            error: bundle.reductionError || "state.json is missing",
+            canReduce: bundle.canReduce,
+            complete: bundle.complete,
+            status: bundle.status,
+          });
+          return;
+        }
+        const trace = await readJson(statePath);
+        decorateTraceState(trace, bundle);
+        json(response, 200, trace);
         return;
       }
       const payloadMatch = url.pathname.match(/^\/api\/traces\/([^/]+)\/payloads\/([^/]+)$/);
@@ -414,6 +648,10 @@ export function createViewerServer(options) {
       json(response, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });
+  const reductionScheduler = setInterval(() => {
+    queueCompletedRawBundles().catch((error) => console.error(`trace reduction queue failed: ${reductionError(error)}`));
+  }, options.reductionPollMs);
+  reductionScheduler.unref();
   const scheduler = setInterval(async () => {
     try {
       const settings = await settingsPromise;
@@ -423,7 +661,11 @@ export function createViewerServer(options) {
     }
   }, 30_000);
   scheduler.unref();
-  server.on("close", () => clearInterval(scheduler));
+  server.on("close", () => {
+    clearInterval(scheduler);
+    clearInterval(reductionScheduler);
+  });
+  void queueCompletedRawBundles().catch((error) => console.error(`trace reduction queue failed: ${reductionError(error)}`));
   return server;
 }
 

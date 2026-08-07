@@ -28,8 +28,8 @@
     </main>
     <main id="session-browser" class="browser-page hidden">
       <div class="browser-header"><div><button id="back-to-days" class="back-button">← 日期</button><h1 id="sessions-day-title">会话</h1><p>选择一次会话查看完整轨迹。</p></div><div class="browser-total"><strong id="session-count">0</strong><span>个会话</span></div></div>
-      <div class="list-controls"><div class="session-search standalone"><span>⌕</span><input id="session-search" type="search" placeholder="搜索指令、Rollout ID、项目或模型" /></div><select id="session-status-filter" title="状态筛选"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">运行中</option><option value="failed">失败</option><option value="raw">待归约</option></select><select id="session-model-filter" title="模型筛选"><option value="all">全部模型</option></select></div>
-      <div class="session-table-head"><span>会话</span><span>状态</span><span>模型</span><span>节点</span><span>Token</span><span>耗时</span><span></span></div>
+      <div class="list-controls"><div class="session-search standalone"><span>⌕</span><input id="session-search" type="search" placeholder="搜索指令、Rollout ID、项目或模型" /></div><select id="session-status-filter" title="状态筛选"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">运行中</option><option value="aborted">已中止</option><option value="cancelled">已取消</option><option value="reducing">归约中</option><option value="failed">失败</option><option value="raw">待归约</option></select><select id="session-model-filter" title="模型筛选"><option value="all">全部模型</option></select></div>
+      <div class="session-table-head"><span>会话</span><span>状态</span><span>模型</span><span>节点</span><span>Token</span><span>耗时</span><span>操作</span><span></span></div>
       <div id="sessions-list" class="session-table"></div>
     </main>
     <main id="trace-workspace" class="workspace hidden">

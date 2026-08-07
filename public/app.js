@@ -4,7 +4,7 @@ const state = {
   traces: [], trace: null, traceTree: null, collapsedNodes: new Set(), selectedTraceId: null, selectedRowId: null, view: "tree",
   reviews: [], selectedReviewDate: null, selectedDay: null, settings: null, config: null, sessionQuery: "", treeQuery: "",
   sessionStatus: "all", sessionModel: "all", route: "days", mobileView: "tree", isInteracting: false,
-  lastRefreshAt: null, refreshInFlight: false, graphScale: 1, graphScrollLeft: 0, graphScrollTop: 0, graphPanelHeight: null,
+  lastRefreshAt: null, refreshInFlight: false, graphScale: 1, graphPanX: 0, graphPanY: 0, graphPanelHeight: null,
   settingsDirty: false, settingsSection: "capture",
 };
 const elements = {
@@ -221,7 +221,7 @@ function renderSessions() {
   const query = state.sessionQuery.trim().toLowerCase();
   const traces = state.traces.filter((trace) => {
     if (localDay(trace.startedAtUnixMs) !== state.selectedDay) return false;
-    if (state.sessionStatus !== "all" && trace.status !== state.sessionStatus) return false;
+    if (state.sessionStatus !== "all" && traceDisplayStatus(trace) !== state.sessionStatus) return false;
     if (state.sessionModel !== "all" && !(trace.models || []).includes(state.sessionModel)) return false;
     return !query || `${trace.rolloutId} ${trace.id} ${trace.firstUserMessage} ${trace.project} ${(trace.models || []).join(" ")}`.toLowerCase().includes(query);
   });
@@ -231,17 +231,78 @@ function renderSessions() {
   elements.sessionModelFilter.innerHTML = `<option value="all">全部模型</option>${models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}`;
   elements.sessionModelFilter.value = models.includes(currentModel) ? currentModel : "all";
   elements.sessions.innerHTML = traces.map((trace) => `
-    <button class="session-row ${trace.id === state.selectedTraceId ? "active" : ""}" data-trace="${escapeHtml(trace.id)}">
+    <div class="session-row ${trace.id === state.selectedTraceId ? "active" : ""}" data-trace="${escapeHtml(trace.id)}" role="button" tabindex="0">
       <span class="session-type-icon" aria-hidden="true">⌁</span><span class="session-main"><strong>${escapeHtml(trace.firstUserMessage || trace.rolloutId || trace.id)}</strong><small>${escapeHtml(trace.rolloutId || trace.id)} · ${new Date(trace.startedAtUnixMs).toLocaleTimeString([], { hour12: false })}${trace.project ? ` · ${escapeHtml(trace.project)}` : ""}</small></span>
-      <span class="session-state ${trace.reducedAtUnixMs ? trace.status : "raw"}">${trace.reducedAtUnixMs ? statusLabel(trace.status) : "待归约"}</span><span class="session-model">${escapeHtml((trace.models || []).join(", ") || "未识别")}</span><span class="session-node-count">${trace.tools || 0} 工具</span><span class="session-token-count">${formatCompactTokens((trace.inputTokens || 0) + (trace.outputTokens || 0))}</span><span class="session-duration">${trace.durationMs == null ? "进行中" : formatMilliseconds(trace.durationMs)}</span><span class="row-arrow">›</span>
-    </button>`).join("") || '<div class="empty">暂无 Trace 数据包</div>';
-  elements.sessions.querySelectorAll("[data-trace]").forEach((button) => {
-    button.addEventListener("click", () => loadTrace(button.dataset.trace));
+      <span class="session-state ${escapeHtml(traceDisplayStatus(trace))}" title="${escapeHtml(sessionStatusDetail(trace))}">${escapeHtml(sessionStatusLabel(trace))}</span><span class="session-model">${escapeHtml((trace.models || []).join(", ") || "未识别")}</span><span class="session-node-count">${trace.tools || 0} 工具</span><span class="session-token-count">${formatCompactTokens((trace.inputTokens || 0) + (trace.outputTokens || 0))}</span><span class="session-duration">${escapeHtml(sessionDurationLabel(trace))}</span>${sessionReductionAction(trace)}<span class="row-arrow" aria-hidden="true">›</span>
+    </div>`).join("") || '<div class="empty">暂无 Trace 数据包</div>';
+  elements.sessions.querySelectorAll(".session-row[data-trace]").forEach((row) => {
+    const open = () => loadTrace(row.dataset.trace);
+    row.addEventListener("click", (event) => {
+      if (!event.target.closest("[data-reduce]")) open();
+    });
+    row.addEventListener("keydown", (event) => {
+      if ((event.key === "Enter" || event.key === " ") && !event.target.closest("[data-reduce]")) {
+        event.preventDefault();
+        open();
+      }
+    });
+  });
+  elements.sessions.querySelectorAll("[data-reduce]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      reduceTrace(button.dataset.reduce, { button });
+    });
   });
 }
 
+function sessionReductionAction(trace) {
+  if (trace.reducedAtUnixMs != null) return '<span class="session-action complete">已归约</span>';
+  if (trace.reductionStatus === "reducing" || trace.status === "reducing") return '<button class="session-reduce-button" disabled>归约中…</button>';
+  if (trace.reductionStatus === "failed" || trace.status === "failed") return `<button class="session-reduce-button retry" data-reduce="${escapeHtml(trace.id)}" title="${escapeHtml(trace.reductionError || "上次归约失败")}">重试归约</button>`;
+  if (trace.canReduce) return `<button class="session-reduce-button" data-reduce="${escapeHtml(trace.id)}">归约</button>`;
+  return '<span class="session-action pending">采集中</span>';
+}
+
 function statusLabel(value) {
-  return ({ completed: "已完成", running: "运行中", failed: "失败", cancelled: "已取消", aborted: "已中止", raw: "待归约", corrupt: "文件损坏", unknown: "未知" })[value] || value || "未知";
+  return ({ completed: "已完成", running: "运行中", failed: "失败", reducing: "归约中", cancelled: "已取消", aborted: "已中止", raw: "待归约", corrupt: "文件损坏", unknown: "未知" })[value] || value || "未知";
+}
+
+function traceDisplayStatus(trace) {
+  return trace.displayStatus || trace.display_status || trace.status || "unknown";
+}
+
+function traceRolloutStatus(trace) {
+  return trace.rolloutStatus || trace.rollout_status || trace.status || "unknown";
+}
+
+function traceTurnStatus(trace) {
+  return trace.turnStatus || trace.turn_status || null;
+}
+
+function sessionStatusLabel(trace) {
+  const displayStatus = traceDisplayStatus(trace);
+  const turnStatus = traceTurnStatus(trace);
+  if (trace.reducedAtUnixMs != null && traceRolloutStatus(trace) === "running" && turnStatus === "completed") return "本轮已完成";
+  if (trace.reducedAtUnixMs != null && traceRolloutStatus(trace) === "running" && turnStatus === "aborted") return "本轮已中止";
+  if (trace.reducedAtUnixMs != null && traceRolloutStatus(trace) === "running" && turnStatus === "cancelled") return "本轮已取消";
+  if (displayStatus === "raw" && !trace.complete) return "采集中";
+  return statusLabel(displayStatus);
+}
+
+function sessionStatusDetail(trace) {
+  const rolloutStatus = traceRolloutStatus(trace);
+  const turnStatus = traceTurnStatus(trace);
+  if (trace.reducedAtUnixMs != null && rolloutStatus === "running" && turnStatus && turnStatus !== "running") {
+    return `本轮：${statusLabel(turnStatus)}；会话：${statusLabel(rolloutStatus)}`;
+  }
+  return `会话：${statusLabel(rolloutStatus)}`;
+}
+
+function sessionDurationLabel(trace) {
+  if (trace.durationMs != null) return formatMilliseconds(trace.durationMs);
+  if (trace.turnDurationMs != null) return `${formatMilliseconds(trace.turnDurationMs)}（本轮）`;
+  if (trace.turn_duration_ms != null) return `${formatMilliseconds(trace.turn_duration_ms)}（本轮）`;
+  return "进行中";
 }
 
 function formatCompactTokens(value) {
@@ -263,13 +324,21 @@ function traceMetrics(trace) {
 function renderSummary() {
   if (!state.trace) return;
   const metrics = traceMetrics(state.trace);
+  const rolloutStatus = state.trace.rollout_status || state.trace.status || "unknown";
+  const turnStatus = state.trace.turn_status;
+  const displayStatus = state.trace.display_status || state.trace.status || "unknown";
+  const activeTurnFinished = rolloutStatus === "running" && turnStatus && turnStatus !== "running";
+  const durationText = state.trace.ended_at_unix_ms == null
+    ? state.trace.turn_duration_ms == null ? "运行中" : `${formatMilliseconds(state.trace.turn_duration_ms)}（本轮）`
+    : formatMilliseconds(state.trace.ended_at_unix_ms - state.trace.started_at_unix_ms);
+  const summaryStatus = activeTurnFinished ? `本轮${statusLabel(turnStatus)} · 会话仍在运行` : statusLabel(displayStatus);
   elements.summary.classList.remove("empty");
   elements.summary.innerHTML = `
     <div class="summary-kicker">TRACE</div><h1>${escapeHtml(state.trace.rollout_id)}</h1>
     <div class="summary-date">${new Date(state.trace.started_at_unix_ms).toLocaleString()}</div>
     <div class="metrics">
-      <span>耗时: <strong>${state.trace.ended_at_unix_ms == null ? "运行中" : formatMilliseconds(state.trace.ended_at_unix_ms - state.trace.started_at_unix_ms)}</strong></span>
-      <span>状态: <strong>${escapeHtml(statusLabel(state.trace.status))}</strong></span>
+      <span>耗时: <strong>${escapeHtml(durationText)}</strong></span>
+      <span>状态: <strong>${escapeHtml(summaryStatus)}</strong></span>
       <span>${metrics.calls} 次模型调用</span><span>${metrics.tools} 次工具调用</span>
       <span>${metrics.usage.input.toLocaleString()} 输入 → ${metrics.usage.output.toLocaleString()} 输出</span>
     </div>`;
@@ -488,7 +557,8 @@ function renderGraphInTimeline() {
   elements.timeline.innerHTML = `<div class="graph-expanded-head"><span>轨迹关系图</span><span class="graph-expanded-meta">${rows.length} 个节点 · 拖动平移 · 滚轮缩放</span><span class="graph-controls"><button data-graph-action="zoom-out" title="缩小" aria-label="缩小">−</button><button data-graph-action="zoom-in" title="放大" aria-label="放大">＋</button><button data-graph-action="fit" title="适配关系图" aria-label="适配关系图">⌗</button></span></div><div class="graph-viewport">${buildGraphMarkup(100)}</div>${rows.length > 100 ? '<div class="graph-truncated">关系图已显示前 100 个节点，树和时间线仍保留全部节点。</div>' : ""}`;
   wireGraphNodes(elements.timeline);
   wireGraphCanvas(elements.timeline);
-  if (state.graphScale === 1 && state.graphScrollLeft === 0 && state.graphScrollTop === 0) fitGraphViewport(elements.timeline.querySelector(".graph-viewport"));
+  const timelineViewport = elements.timeline.querySelector(".graph-viewport");
+  if (timelineViewport?.clientWidth && state.graphScale === 1 && state.graphPanX === 0 && state.graphPanY === 0) fitGraphViewport(timelineViewport);
 }
 
 function renderGraph() {
@@ -498,7 +568,8 @@ function renderGraph() {
   elements.graph.innerHTML = `<div class="graph-viewport">${buildGraphMarkup(100)}</div>${allRows.length > 100 ? `<div class="graph-truncated">关系图已显示前 100 个节点，完整节点仍可在树和时间线中查看。</div>` : ""}`;
   wireGraphNodes(elements.graph);
   wireGraphCanvas(elements.graph);
-  if (state.graphScale === 1 && state.graphScrollLeft === 0 && state.graphScrollTop === 0) fitGraphViewport(elements.graph.querySelector(".graph-viewport"));
+  const graphViewport = elements.graph.querySelector(".graph-viewport");
+  if (graphViewport?.clientWidth && state.graphScale === 1 && state.graphPanX === 0 && state.graphPanY === 0) fitGraphViewport(graphViewport);
 }
 
 function graphLayout(root, limit) {
@@ -557,11 +628,18 @@ function buildGraphMarkup(limit) {
       <span class="graph-card-icon node-type ${escapeHtml(node.type)}">${nodeIcon(node)}</span><span class="graph-card-content"><strong>${escapeHtml(node.title)}</strong><small>${escapeHtml(nodeTypeLabel(node.type))}</small></span><span class="graph-card-metric">${escapeHtml(formatNodeDuration(node))}</span>
     </button>`;
   }).join("");
-  return `<div class="graph-stage" data-base-width="${stageWidth}" data-base-height="${stageHeight}" style="width:${stageWidth}px;height:${stageHeight}px;transform-origin:0 0;transform:scale(${state.graphScale})"><svg class="graph-edges" viewBox="0 0 ${stageWidth} ${stageHeight}" aria-hidden="true"><defs><marker id="${markerId}" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M 0 0 L 7 3.5 L 0 7 z" fill="#60606a" /></marker></defs>${edges}</svg>${nodes}</div>`;
+  return `<div class="graph-stage" data-base-width="${stageWidth}" data-base-height="${stageHeight}" style="width:${stageWidth}px;height:${stageHeight}px;transform-origin:0 0;transform:translate3d(${state.graphPanX}px,${state.graphPanY}px,0) scale(${state.graphScale})"><svg class="graph-edges" viewBox="0 0 ${stageWidth} ${stageHeight}" aria-hidden="true"><defs><marker id="${markerId}" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M 0 0 L 7 3.5 L 0 7 z" fill="#60606a" /></marker></defs>${edges}</svg>${nodes}</div>`;
 }
 
 function wireGraphNodes(container) {
-  container.querySelectorAll("[data-node]").forEach((button) => button.addEventListener("click", () => selectTraceNode(button.dataset.node)));
+  container.querySelectorAll("[data-node]").forEach((button) => button.addEventListener("click", () => {
+    const viewport = button.closest(".graph-viewport");
+    if (viewport?.dataset.panMoved) {
+      delete viewport.dataset.panMoved;
+      return;
+    }
+    selectTraceNode(button.dataset.node);
+  }));
 }
 
 let graphRenderSequence = 0;
@@ -575,18 +653,12 @@ function applyGraphScale(viewport, nextScale, anchorX = viewport.clientWidth / 2
   if (!stage) return;
   const oldScale = state.graphScale;
   const scale = graphScaleValue(nextScale);
-  const worldX = (viewport.scrollLeft + anchorX) / oldScale;
-  const worldY = (viewport.scrollTop + anchorY) / oldScale;
+  const worldX = (anchorX - state.graphPanX) / oldScale;
+  const worldY = (anchorY - state.graphPanY) / oldScale;
   state.graphScale = scale;
-  stage.style.transform = `scale(${scale})`;
-  stage.style.marginRight = `${Math.max(0, Number(stage.dataset.baseWidth) * (scale - 1))}px`;
-  stage.style.marginBottom = `${Math.max(0, Number(stage.dataset.baseHeight) * (scale - 1))}px`;
-  requestAnimationFrame(() => {
-    viewport.scrollLeft = Math.max(0, worldX * scale - anchorX);
-    viewport.scrollTop = Math.max(0, worldY * scale - anchorY);
-    state.graphScrollLeft = viewport.scrollLeft;
-    state.graphScrollTop = viewport.scrollTop;
-  });
+  state.graphPanX = anchorX - worldX * scale;
+  state.graphPanY = anchorY - worldY * scale;
+  stage.style.transform = graphTransform();
 }
 
 function wireGraphCanvas(container) {
@@ -594,26 +666,31 @@ function wireGraphCanvas(container) {
   if (!viewport) return;
   const stage = viewport.querySelector(".graph-stage");
   if (!stage) return;
-  viewport.style.cursor = "grab";
-  stage.style.marginRight = `${Math.max(0, Number(stage.dataset.baseWidth) * (state.graphScale - 1))}px`;
-  stage.style.marginBottom = `${Math.max(0, Number(stage.dataset.baseHeight) * (state.graphScale - 1))}px`;
-  viewport.scrollLeft = state.graphScrollLeft;
-  viewport.scrollTop = state.graphScrollTop;
+  stage.style.transform = graphTransform();
   let drag = null;
   viewport.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.target.closest("[data-node]")) return;
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop };
+    if (event.button !== 0) return;
+    delete viewport.dataset.panMoved;
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
     viewport.setPointerCapture(event.pointerId);
     viewport.classList.add("is-panning");
   });
   viewport.addEventListener("pointermove", (event) => {
     if (!drag) return;
-    viewport.scrollLeft = drag.left - (event.clientX - drag.x);
-    viewport.scrollTop = drag.top - (event.clientY - drag.y);
-    state.graphScrollLeft = viewport.scrollLeft;
-    state.graphScrollTop = viewport.scrollTop;
+    const deltaX = event.clientX - drag.x;
+    const deltaY = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(deltaX, deltaY) < 4) return;
+    drag.moved = true;
+    state.graphPanX += deltaX;
+    state.graphPanY += deltaY;
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    stage.style.transform = graphTransform();
+    event.preventDefault();
   });
   const stopDragging = () => {
+    if (drag?.moved) viewport.dataset.panMoved = "true";
+    if (drag && viewport.hasPointerCapture(drag.id)) viewport.releasePointerCapture(drag.id);
     drag = null;
     viewport.classList.remove("is-panning");
   };
@@ -621,7 +698,8 @@ function wireGraphCanvas(container) {
   viewport.addEventListener("pointercancel", stopDragging);
   viewport.addEventListener("wheel", (event) => {
     event.preventDefault();
-    applyGraphScale(viewport, state.graphScale * (event.deltaY < 0 ? 1.1 : 0.9), event.offsetX, event.offsetY);
+    const bounds = viewport.getBoundingClientRect();
+    applyGraphScale(viewport, state.graphScale * (event.deltaY < 0 ? 1.1 : 0.9), event.clientX - bounds.left, event.clientY - bounds.top);
   }, { passive: false });
   container.querySelectorAll("[data-graph-action]").forEach((button) => button.addEventListener("click", () => {
     const action = button.dataset.graphAction;
@@ -629,6 +707,10 @@ function wireGraphCanvas(container) {
     if (action === "zoom-out") applyGraphScale(viewport, state.graphScale * 0.87);
     if (action === "fit") fitGraphViewport(viewport);
   }));
+}
+
+function graphTransform() {
+  return `translate3d(${state.graphPanX}px,${state.graphPanY}px,0) scale(${state.graphScale})`;
 }
 
 function graphPanelBounds() {
@@ -700,22 +782,11 @@ function fitGraphViewport(viewport) {
   if (!stage) return;
   const baseWidth = Number(stage.dataset.baseWidth);
   const scale = Math.min(1, Math.max(0.55, (viewport.clientWidth - 28) / baseWidth));
-  const root = stage.querySelector(".graph-card");
-  state.graphScrollTop = 0;
+  const scaledWidth = baseWidth * scale;
   state.graphScale = scale;
-  stage.style.transform = `scale(${scale})`;
-  stage.style.marginRight = `${Math.max(0, baseWidth * (scale - 1))}px`;
-  stage.style.marginBottom = `${Math.max(0, Number(stage.dataset.baseHeight) * (scale - 1))}px`;
-  const centerRoot = () => {
-    const rootCenter = root ? root.offsetLeft + root.offsetWidth / 2 : baseWidth / 2;
-    const targetLeft = rootCenter * scale - viewport.clientWidth / 2;
-    const maxLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
-    state.graphScrollLeft = Math.min(maxLeft, Math.max(0, targetLeft));
-    viewport.scrollLeft = state.graphScrollLeft;
-    viewport.scrollTop = 0;
-  };
-  centerRoot();
-  requestAnimationFrame(centerRoot);
+  state.graphPanX = Math.max(14, (viewport.clientWidth - scaledWidth) / 2);
+  state.graphPanY = 16;
+  stage.style.transform = graphTransform();
 }
 
 function nodeTypeLabel(type) {
@@ -908,26 +979,34 @@ function showTraceWorkspace(id) {
 }
 
 function renderReductionRequired(error) {
-  elements.timeline.innerHTML = `<div class="reduction-card" role="alert"><span class="state-icon">⌁</span><h2>这次会话还没有归约状态</h2><p>Raw trace 仍在本地目录中。归约会读取已有事件并生成可浏览的树、时间线和详情，不会上传数据。</p><div class="reduction-error">${escapeHtml(error?.message || "需要归约")}</div><button id="reduce-trace" class="primary-action">开始归约</button></div>`;
+  const canReduce = error?.body?.canReduce !== false;
+  const active = error?.body?.complete === false && !canReduce;
+  const reducing = error?.body?.status === "reducing";
+  const heading = active ? "这次会话仍在采集" : reducing ? "正在归约这次会话" : error?.body?.status === "failed" ? "这次会话归约失败" : "这次会话还没有归约状态";
+  const message = active ? "Codex 还在写入 trace。会话结束后监测器会自动归约，完成后刷新即可查看完整轨迹。" : reducing ? "监测器正在读取 Raw 事件并生成树、时间线和关系图，请稍候。" : "Raw trace 仍在本地目录中。归约会读取已有事件并生成可浏览的树、时间线和详情，不会上传数据。";
+  const action = canReduce ? '<button id="reduce-trace" class="primary-action">开始归约</button>' : `<span class="reduction-pending">${reducing ? "归约进行中…" : "等待会话结束后自动归约"}</span>`;
+  elements.timeline.innerHTML = `<div class="reduction-card" role="alert"><span class="state-icon">⌁</span><h2>${heading}</h2><p>${message}</p><div class="reduction-error">${escapeHtml(error?.message || "需要归约")}</div>${action}</div>`;
   elements.graph.innerHTML = '<div class="empty">归约完成后生成关系图</div>';
   elements.details.classList.remove("empty");
-  elements.details.innerHTML = `<div class="empty-detail"><span class="state-icon">⌁</span><h2>等待归约</h2><p>完成后可查看完整 Trace。</p></div>`;
+  elements.details.innerHTML = `<div class="empty-detail"><span class="state-icon">⌁</span><h2>${active ? "正在采集" : reducing ? "正在归约" : "等待归约"}</h2><p>${active ? "会话完成后将自动生成可浏览的 Trace。" : reducing ? "归约完成后可查看完整 Trace。" : "完成后可查看完整 Trace。"}</p></div>`;
   document.querySelector("#reduce-trace")?.addEventListener("click", () => reduceTrace(state.selectedTraceId));
 }
 
-async function reduceTrace(id) {
-  const button = document.querySelector("#reduce-trace");
+async function reduceTrace(id, { button: sourceButton = null } = {}) {
+  const button = sourceButton || document.querySelector("#reduce-trace");
   if (button) { button.disabled = true; button.textContent = "准备归约…"; }
   elements.captureStatus.textContent = "正在归约 Trace…";
   try {
     const trace = await api(`/api/traces/${encodeURIComponent(id)}?reduce=1`);
-    installTrace(id, trace);
+    if (state.route === "trace" && state.selectedTraceId === id) installTrace(id, trace);
+    await refresh();
     elements.captureStatus.textContent = "采集正常";
   } catch (error) {
-    renderReductionRequired(error);
+    if (state.route === "trace" && state.selectedTraceId === id) renderReductionRequired(error);
+    else await refresh();
     elements.captureStatus.textContent = "归约失败";
   } finally {
-    if (button) { button.disabled = false; button.textContent = "重试归约"; }
+    if (button && button.isConnected) { button.disabled = false; button.textContent = "重试归约"; }
   }
 }
 
@@ -937,8 +1016,8 @@ function installTrace(id, trace, nodeId = "") {
   state.traceTree = buildTraceTree(trace);
   state.collapsedNodes = new Set();
   state.graphScale = 1;
-  state.graphScrollLeft = 0;
-  state.graphScrollTop = 0;
+  state.graphPanX = 0;
+  state.graphPanY = 0;
   state.selectedRowId = nodeId && findTraceNode(state.traceTree, nodeId) ? nodeId : state.traceTree.id;
   showTraceWorkspace(id);
   applyMobilePanel("tree");
