@@ -63,28 +63,60 @@
     </main>
     <dialog id="settings-dialog">
       <form id="settings-form" method="dialog">
-        <div class="dialog-title"><strong>监测与复盘设置</strong><button value="cancel" title="关闭">×</button></div>
-        <div class="settings-group"><h3>采集设置</h3><p>Trace 只写入本机目录，不会发送到 Langfuse 或其他服务。</p><div class="repository-path">Trace 根目录：<code id="trace-root-setting"></code><br />Codex CLI：<code id="codex-executable"></code></div></div>
-        <div class="settings-group"><h3>每日复盘</h3><label class="field"><span>启用每日复盘</span><input name="enabled" type="checkbox" /></label><label class="field"><span>每日运行时间</span><input name="scheduleTime" type="time" required /></label></div>
-        <div class="settings-group llm-settings-group">
-          <div class="settings-group-heading"><div><h3>LLM 智能分析</h3><p>可选增强。使用 OpenAI 兼容的 Chat Completions 接口重新归纳场景、习惯和改进建议。</p></div><label class="compact-toggle"><span>启用</span><input id="llm-enabled" name="llmEnabled" type="checkbox" /></label></div>
-          <fieldset id="llm-settings-fields" class="settings-fieldset">
-            <label class="field"><span>API 基础地址</span><input name="llmBaseUrl" type="url" placeholder="https://api.openai.com/v1" required /></label>
-            <label class="field"><span>模型名称</span><input name="llmModel" type="text" placeholder="gpt-5-mini 或兼容模型" autocomplete="off" required /></label>
-            <label class="field"><span>API Key</span><span class="key-input"><input name="llmApiKey" type="password" placeholder="本地服务可留空" autocomplete="new-password" /><small id="llm-key-state">尚未保存密钥</small></span></label>
-            <label id="llm-clear-key-field" class="field checkbox-field hidden"><span>清除密钥</span><input name="clearLlmApiKey" type="checkbox" /></label>
-            <label class="field"><span>超时时间（秒）</span><input name="llmTimeoutSeconds" type="number" min="5" max="300" /></label>
-            <div class="llm-test-row"><button id="test-llm" type="button">测试连接</button><span id="llm-test-status" role="status"></span></div>
-            <div class="llm-privacy-note">调用时会把聚合指标和经过裁剪、脱敏的提示预览发送到所填 API，不会发送原始 Payload、源码或完整命令输出。API Key 仅保存在本机日报目录的设置文件中。</div>
-          </fieldset>
+        <header class="settings-header">
+          <div class="settings-title"><span class="settings-kicker">WORKSPACE SETTINGS</span><h2>监测与复盘设置</h2><p>管理本地采集、日报计划和可选的 LLM 分析。</p></div>
+          <div class="settings-header-actions"><span id="settings-draft-status" class="draft-status">已同步</span><button value="cancel" class="settings-close" title="关闭设置" aria-label="关闭设置">×</button></div>
+        </header>
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="设置分区">
+            <button type="button" class="settings-nav-item active" data-settings-section="capture"><span class="settings-nav-icon">◉</span><span><strong>采集状态</strong><small>目录与 Codex CLI</small></span></button>
+            <button type="button" class="settings-nav-item" data-settings-section="review"><span class="settings-nav-icon">◷</span><span><strong>每日复盘</strong><small>时间与自动任务</small></span></button>
+            <button type="button" class="settings-nav-item" data-settings-section="llm"><span class="settings-nav-icon">✦</span><span><strong>LLM 分析</strong><small>OpenAI 兼容 API</small></span></button>
+            <button type="button" class="settings-nav-item" data-settings-section="retention"><span class="settings-nav-icon">⌁</span><span><strong>数据管理</strong><small>未使用阈值与保留</small></span></button>
+            <button type="button" class="settings-nav-item" data-settings-section="privacy"><span class="settings-nav-icon">▣</span><span><strong>隐私说明</strong><small>本地数据边界</small></span></button>
+          </nav>
+          <div id="settings-content" class="settings-content">
+            <section id="settings-section-capture" class="settings-section" data-settings-panel="capture" tabindex="-1">
+              <div class="section-heading-large"><div><span class="section-kicker">01 / LOCAL COLLECTION</span><h3>采集状态</h3><p>Trace 只写入本机目录，不会发送到 Langfuse 或其他服务。</p></div><span id="settings-capture-badge" class="status-badge neutral">检查中</span></div>
+              <div class="settings-status-grid">
+                <div class="settings-status-card"><span>采集环境</span><strong id="capture-status-setting">检查中</strong><small>Codex 新会话需要继承 trace 配置。</small></div>
+                <div class="settings-status-card"><span>Codex CLI</span><strong id="codex-executable">codex</strong><small>用于归约 Raw session。</small></div>
+              </div>
+              <div class="settings-path-list">
+                <div class="settings-path-row"><div><span>Trace 根目录</span><small>Codex rollout bundle 的来源目录</small></div><code id="trace-root-setting">未配置</code><button type="button" class="path-copy" data-copy-target="trace-root-setting" title="复制 Trace 根目录" aria-label="复制 Trace 根目录">⧉</button></div>
+                <div class="settings-path-row"><div><span>日报仓库</span><small>日报、LLM 设置和历史复盘</small></div><code id="data-root">未配置</code><button type="button" class="path-copy" data-copy-target="data-root" title="复制日报仓库路径" aria-label="复制日报仓库路径">⧉</button></div>
+              </div>
+              <div class="settings-callout info"><strong>采集提示</strong><span>修改 trace 目录后，请完全退出并重新启动 Codex CLI 或 Desktop App，确保它继承新的环境变量。</span></div>
+            </section>
+
+            <section id="settings-section-review" class="settings-section" data-settings-panel="review" tabindex="-1">
+              <div class="section-heading-large"><div><span class="section-kicker">02 / DAILY REVIEW</span><h3>每日复盘</h3><p>在本地汇总会话、工具、Skill、MCP 和使用场景。</p></div><label class="settings-toggle"><input name="enabled" type="checkbox" /><span class="toggle-track" aria-hidden="true"></span><strong>启用</strong></label></div>
+              <div class="settings-field-grid single-column"><label class="field"><span class="field-copy"><strong>每日运行时间</strong><small>使用本机时区；服务保持运行时会自动执行。</small></span><input name="scheduleTime" type="time" required /></label></div>
+              <div class="settings-callout"><strong>运行方式</strong><span>日报只使用本地聚合数据。没有会话时不会生成空报告，也不会自动删除 trace、Skill 或 MCP。</span></div>
+            </section>
+
+            <section id="settings-section-llm" class="settings-section" data-settings-panel="llm" tabindex="-1">
+              <div class="section-heading-large"><div><span class="section-kicker">03 / OPTIONAL INTELLIGENCE</span><h3>LLM 智能分析</h3><p>使用 OpenAI 兼容的 Chat Completions 接口，补充动态场景和习惯归纳。</p></div><label class="settings-toggle"><input id="llm-enabled" name="llmEnabled" type="checkbox" /><span class="toggle-track" aria-hidden="true"></span><strong>启用</strong></label></div>
+              <fieldset id="llm-settings-fields" class="settings-fieldset">
+                <div class="settings-field-grid"><label class="field"><span class="field-copy"><strong>API 基础地址</strong><small>支持基础地址或完整 Chat Completions endpoint。</small></span><input name="llmBaseUrl" type="url" placeholder="https://api.openai.com/v1" required /></label><label class="field"><span class="field-copy"><strong>模型名称</strong><small>例如 gpt-5-mini 或本地兼容模型。</small></span><input name="llmModel" type="text" placeholder="填写模型名称" autocomplete="off" required /></label><label class="field"><span class="field-copy"><strong>API Key</strong><small id="llm-key-state">尚未保存密钥；本地服务可留空。</small></span><input name="llmApiKey" type="password" placeholder="输入后保存，界面不会回显" autocomplete="new-password" /></label><label id="llm-clear-key-field" class="field checkbox-field hidden"><span class="field-copy"><strong>清除已保存密钥</strong><small>清除后下次请求不再携带 API Key。</small></span><input name="clearLlmApiKey" type="checkbox" /></label><label class="field"><span class="field-copy"><strong>超时时间</strong><small>连接和读取响应的总超时。</small></span><span class="input-suffix"><input name="llmTimeoutSeconds" type="number" min="5" max="300" /><em>秒</em></span></label></div>
+                <div class="llm-test-row"><button id="test-llm" type="button">测试连接</button><span id="llm-test-status" role="status">保存前建议先测试连接。</span></div>
+                <div class="llm-privacy-note"><strong>发送边界</strong><span>只发送聚合指标、Top 使用项、清理信号和经过裁剪/脱敏的提示预览，不发送原始 Payload、源码或完整命令输出。API Key 仅保存在本机日报目录的设置文件中。</span></div>
+              </fieldset>
+            </section>
+
+            <section id="settings-section-retention" class="settings-section" data-settings-panel="retention" tabindex="-1">
+              <div class="section-heading-large"><div><span class="section-kicker">04 / DATA MANAGEMENT</span><h3>数据管理</h3><p>控制长期未使用建议的出现时间，以及日报的保留周期。</p></div></div>
+              <div class="settings-field-grid"><label class="field"><span class="field-copy"><strong>工具未使用阈值</strong><small>超过该天数会出现在清理建议。</small></span><span class="input-suffix"><input name="inactiveToolDays" type="number" min="1" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>Skill 未使用阈值</strong><small>只影响日报建议，不会删除 Skill。</small></span><span class="input-suffix"><input name="inactiveSkillDays" type="number" min="1" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>MCP 未使用阈值</strong><small>只影响日报建议，不会修改配置。</small></span><span class="input-suffix"><input name="inactiveMcpDays" type="number" min="1" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>日报保留天数</strong><small>超过期限的日报会被清理，trace 不受影响。</small></span><span class="input-suffix"><input name="retentionDays" type="number" min="1" max="3650" /><em>天</em></span></label></div>
+            </section>
+
+            <section id="settings-section-privacy" class="settings-section" data-settings-panel="privacy" tabindex="-1">
+              <div class="section-heading-large"><div><span class="section-kicker">05 / PRIVACY</span><h3>隐私与安全</h3><p>Trace 可能包含提示词、源码、路径、工具参数和命令输出。</p></div></div>
+              <div class="privacy-list"><div><span class="privacy-icon">●</span><div><strong>默认本地</strong><p>viewer 只绑定 `127.0.0.1`，不会自动上传 Langfuse 或其他服务。</p></div></div><div><span class="privacy-icon">◆</span><div><strong>LLM 可控</strong><p>只有打开 LLM 分析并保存 API 配置后，聚合数据才会发送到你填写的接口。</p></div></div><div><span class="privacy-icon">▰</span><div><strong>清理需确认</strong><p>长期未使用项只是建议，工具不会自动删除 Skill、MCP 或 trace bundle。</p></div></div></div>
+            </section>
+          </div>
         </div>
-        <div class="settings-group"><h3>数据保留与建议</h3><label class="field"><span>工具未使用阈值（天）</span><input name="inactiveToolDays" type="number" min="1" max="3650" /></label><label class="field"><span>Skill 未使用阈值（天）</span><input name="inactiveSkillDays" type="number" min="1" max="3650" /></label><label class="field"><span>MCP 未使用阈值（天）</span><input name="inactiveMcpDays" type="number" min="1" max="3650" /></label><label class="field"><span>日报保留天数</span><input name="retentionDays" type="number" min="1" max="3650" /></label></div>
-        <div class="repository-path">日报仓库：<code id="data-root"></code><br />敏感内容可能包含提示词、源码、路径和命令输出。</div>
         <div id="settings-error" class="form-error" role="alert"></div><div id="settings-saved" class="settings-saved" role="status"></div>
-        <div class="dialog-actions">
-          <button id="run-review" type="button">立即生成今日复盘</button>
-          <button class="primary" value="save">保存设置</button>
-        </div>
+        <footer class="settings-footer"><button id="run-review" type="button" class="secondary-action">立即生成今日复盘</button><div class="settings-footer-actions"><button type="submit" value="cancel" class="cancel-action">取消</button><button class="primary" value="save">保存设置</button></div></footer>
       </form>
     </dialog>
     <script type="module" src="app.js"></script>

@@ -5,6 +5,7 @@ const state = {
   reviews: [], selectedReviewDate: null, selectedDay: null, settings: null, config: null, sessionQuery: "", treeQuery: "",
   sessionStatus: "all", sessionModel: "all", route: "days", mobileView: "tree", isInteracting: false,
   lastRefreshAt: null, refreshInFlight: false, graphScale: 1, graphScrollLeft: 0, graphScrollTop: 0, graphPanelHeight: null,
+  settingsDirty: false, settingsSection: "capture",
 };
 const elements = {
   dayBrowser: document.querySelector("#day-browser"),
@@ -48,8 +49,12 @@ const elements = {
   settingsButton: document.querySelector("#settings-button"),
   settingsDialog: document.querySelector("#settings-dialog"),
   settingsForm: document.querySelector("#settings-form"),
+  settingsContent: document.querySelector("#settings-content"),
+  settingsDraftStatus: document.querySelector("#settings-draft-status"),
   settingsError: document.querySelector("#settings-error"),
   settingsSaved: document.querySelector("#settings-saved"),
+  captureStatusSetting: document.querySelector("#capture-status-setting"),
+  captureBadge: document.querySelector("#settings-capture-badge"),
   llmEnabled: document.querySelector("#llm-enabled"),
   llmFields: document.querySelector("#llm-settings-fields"),
   llmKeyState: document.querySelector("#llm-key-state"),
@@ -968,6 +973,7 @@ async function refresh({ initial = false } = {}) {
     const [config, result] = await Promise.all([api("/api/config"), api("/api/traces")]);
     state.config = config;
     state.traces = result.traces;
+    if (elements.settingsDialog.open) renderSettingsCaptureStatus();
     state.lastRefreshAt = Date.now();
     elements.lastRefresh.textContent = `更新于 ${new Date(state.lastRefreshAt).toLocaleTimeString([], { hour12: false })}`;
     elements.captureStatus.textContent = config.traceCaptureEnabled ? "采集正常" : "未检测到采集环境变量";
@@ -1160,6 +1166,7 @@ function formatDuration(milliseconds) {
 async function openSettings() {
   try {
     state.settings = await api("/api/settings");
+    state.settingsDirty = false;
     elements.settingsForm.elements.enabled.checked = state.settings.enabled;
     elements.settingsForm.elements.scheduleTime.value = state.settings.scheduleTime;
     elements.settingsForm.elements.inactiveToolDays.value = state.settings.inactiveToolDays;
@@ -1177,14 +1184,64 @@ async function openSettings() {
     elements.llmTestStatus.textContent = "";
     elements.llmTestStatus.className = "";
     syncLlmSettingsFields();
-    document.querySelector("#data-root").textContent = state.config?.dataRoot || state.settings.dataRoot;
+    document.querySelector("#data-root").textContent = state.config?.dataRoot || state.settings.dataRoot || "未配置";
     elements.traceRootSetting.textContent = state.config?.traceRoot || "未配置";
     elements.codexExecutable.textContent = state.config?.codexExecutable || "codex";
+    renderSettingsCaptureStatus();
+    updateSettingsDraftStatus();
+    setSettingsSection("capture", { scroll: false });
     elements.settingsError.textContent = "";
     elements.settingsSaved.textContent = "";
     elements.settingsDialog.showModal();
   } catch (error) {
     alert(error.message);
+  }
+}
+
+function renderSettingsCaptureStatus() {
+  const enabled = Boolean(state.config?.traceCaptureEnabled);
+  elements.captureStatusSetting.textContent = enabled ? "采集正常" : "未检测到环境变量";
+  elements.captureStatusSetting.className = enabled ? "capture-ok" : "capture-warn";
+  elements.captureBadge.textContent = enabled ? "正常" : "需要检查";
+  elements.captureBadge.className = `status-badge ${enabled ? "ok" : "warn"}`;
+}
+
+function updateSettingsDraftStatus() {
+  elements.settingsDraftStatus.textContent = state.settingsDirty ? "有未保存修改" : "已同步";
+  elements.settingsDraftStatus.classList.toggle("dirty", state.settingsDirty);
+}
+
+function setSettingsDirty() {
+  if (!state.settingsDirty) {
+    state.settingsDirty = true;
+    updateSettingsDraftStatus();
+  }
+  elements.settingsSaved.textContent = "";
+}
+
+function setSettingsSection(section, { scroll = true } = {}) {
+  const target = document.querySelector(`[data-settings-panel="${section}"]`);
+  if (!target) return;
+  state.settingsSection = section;
+  document.querySelectorAll(".settings-nav-item").forEach((item) => item.classList.toggle("active", item.dataset.settingsSection === section));
+  if (scroll) elements.settingsContent.scrollTo({ top: Math.max(0, target.offsetTop - 12), behavior: "smooth" });
+}
+
+async function copySettingPath(button) {
+  const target = document.getElementById(button.dataset.copyTarget);
+  const value = target?.textContent?.trim();
+  if (!value || value === "未配置") return;
+  try {
+    await navigator.clipboard.writeText(value);
+    const original = button.textContent;
+    button.textContent = "✓";
+    button.classList.add("copied");
+    setTimeout(() => {
+      button.textContent = original;
+      button.classList.remove("copied");
+    }, 900);
+  } catch {
+    elements.settingsError.textContent = "无法复制路径，请手动选择并复制。";
   }
 }
 
@@ -1219,6 +1276,8 @@ async function saveSettings() {
   state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
   form.llmApiKey.value = "";
   form.clearLlmApiKey.checked = false;
+  state.settingsDirty = false;
+  updateSettingsDraftStatus();
   elements.settingsSaved.textContent = "已保存设置";
 }
 
@@ -1296,13 +1355,26 @@ elements.graphZoomOut.addEventListener("click", () => applyGraphScale(elements.g
 wireTraceResizeHandle();
 document.querySelectorAll(".mode").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
 elements.settingsButton.addEventListener("click", openSettings);
+document.querySelectorAll(".settings-nav-item").forEach((button) => button.addEventListener("click", () => setSettingsSection(button.dataset.settingsSection)));
+document.querySelectorAll(".path-copy").forEach((button) => button.addEventListener("click", () => copySettingPath(button)));
+elements.settingsForm.addEventListener("input", setSettingsDirty);
+elements.settingsForm.addEventListener("change", setSettingsDirty);
 elements.llmEnabled.addEventListener("change", syncLlmSettingsFields);
 elements.llmTest.addEventListener("click", testLlmSettings);
 elements.settingsDialog.addEventListener("close", () => {
+  state.settingsDirty = false;
   if (document.querySelector('.mode.active')?.dataset.mode === "settings") syncRouteFromHash();
+});
+elements.settingsDialog.addEventListener("cancel", (event) => {
+  if (!state.settingsDirty) return;
+  if (!window.confirm("还有未保存的设置，确定关闭吗？")) event.preventDefault();
 });
 elements.runReview.addEventListener("click", runReviewNow);
 elements.settingsForm.addEventListener("submit", async (event) => {
+  if (event.submitter?.value === "cancel") {
+    if (state.settingsDirty && !window.confirm("还有未保存的设置，确定关闭吗？")) event.preventDefault();
+    return;
+  }
   if (event.submitter?.value !== "save") return;
   event.preventDefault();
   try {
