@@ -64,6 +64,9 @@ const elements = {
   traceRootSetting: document.querySelector("#trace-root-setting"),
   codexExecutable: document.querySelector("#codex-executable"),
   runReview: document.querySelector("#run-review"),
+  filterSummary: document.querySelector("#session-filter-summary"),
+  clearSessionFilters: document.querySelector("#clear-session-filters"),
+  toastRegion: document.querySelector("#toast-region"),
 };
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -75,6 +78,47 @@ const duration = (execution) => execution?.ended_at_unix_ms == null
   : `${Math.max(0, execution.ended_at_unix_ms - execution.started_at_unix_ms)} ms`;
 const clock = (timestamp) => timestamp ? new Date(timestamp).toLocaleTimeString([], { hour12: false }) : "-";
 const status = (execution) => execution?.status || "unknown";
+const uiPreferencesKey = "codex-trace-viewer-ui";
+
+function readUiPreferences() {
+  try {
+    return JSON.parse(localStorage.getItem(uiPreferencesKey) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveUiPreferences() {
+  try {
+    localStorage.setItem(uiPreferencesKey, JSON.stringify({
+      autoRefresh: elements.autoRefresh.checked,
+      refreshInterval: elements.refreshInterval.value,
+      graphPanelHeight: state.graphPanelHeight,
+    }));
+  } catch {
+    // Preferences are optional when storage is unavailable.
+  }
+}
+
+function setCaptureStatus(message, tone = "ok") {
+  elements.captureStatus.textContent = message;
+  elements.captureStatus.closest(".global-status")?.classList.remove("ok", "warn", "busy", "error");
+  elements.captureStatus.closest(".global-status")?.classList.add(tone);
+}
+
+function showToast(message, tone = "info") {
+  if (!elements.toastRegion) return;
+  const toast = document.createElement("div");
+  toast.className = `toast ${tone}`;
+  toast.textContent = message;
+  elements.toastRegion.replaceChildren(toast);
+  requestAnimationFrame(() => toast.classList.add("visible"));
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => {
+    toast.classList.remove("visible");
+    setTimeout(() => toast.remove(), 180);
+  }, 2600);
+}
 
 async function api(url, options = {}) {
   const response = await fetch(url, {
@@ -196,16 +240,12 @@ function showDays(sync = true) {
 }
 
 function showSessions(day, sync = true) {
+  const dayChanged = state.selectedDay !== day;
   document.querySelectorAll(".mode").forEach((button) => button.classList.toggle("active", button.dataset.mode === "traces"));
   state.selectedDay = day;
   state.route = "sessions";
   if (sync) updateHash(`day?value=${encodeURIComponent(day)}`);
-  state.sessionQuery = "";
-  state.sessionStatus = "all";
-  state.sessionModel = "all";
-  elements.sessionSearch.value = "";
-  elements.sessionStatusFilter.value = "all";
-  elements.sessionModelFilter.value = "all";
+  if (dayChanged) resetSessionFilters({ render: false });
   elements.dayBrowser.classList.add("hidden");
   elements.sessionBrowser.classList.remove("hidden");
   elements.traceWorkspace.classList.add("hidden");
@@ -219,14 +259,18 @@ function showSessions(day, sync = true) {
 
 function renderSessions() {
   const query = state.sessionQuery.trim().toLowerCase();
-  const traces = state.traces.filter((trace) => {
-    if (localDay(trace.startedAtUnixMs) !== state.selectedDay) return false;
+  const dayTraces = state.traces.filter((trace) => localDay(trace.startedAtUnixMs) === state.selectedDay);
+  const models = [...new Set(dayTraces.flatMap((trace) => trace.models || []))].sort();
+  if (state.sessionModel !== "all" && !models.includes(state.sessionModel)) state.sessionModel = "all";
+  const traces = dayTraces.filter((trace) => {
     if (state.sessionStatus !== "all" && traceDisplayStatus(trace) !== state.sessionStatus) return false;
     if (state.sessionModel !== "all" && !(trace.models || []).includes(state.sessionModel)) return false;
     return !query || `${trace.rolloutId} ${trace.id} ${trace.firstUserMessage} ${trace.project} ${(trace.models || []).join(" ")}`.toLowerCase().includes(query);
   });
+  const filtersActive = Boolean(query || state.sessionStatus !== "all" || state.sessionModel !== "all");
   elements.count.textContent = traces.length;
-  const models = [...new Set(state.traces.filter((trace) => localDay(trace.startedAtUnixMs) === state.selectedDay).flatMap((trace) => trace.models || []))].sort();
+  elements.filterSummary.textContent = filtersActive ? `找到 ${traces.length} / ${dayTraces.length} 个会话` : `共 ${dayTraces.length} 个会话`;
+  elements.clearSessionFilters.classList.toggle("hidden", !filtersActive);
   const currentModel = state.sessionModel;
   elements.sessionModelFilter.innerHTML = `<option value="all">全部模型</option>${models.map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`).join("")}`;
   elements.sessionModelFilter.value = models.includes(currentModel) ? currentModel : "all";
@@ -234,7 +278,9 @@ function renderSessions() {
     <div class="session-row ${trace.id === state.selectedTraceId ? "active" : ""}" data-trace="${escapeHtml(trace.id)}" role="button" tabindex="0">
       <span class="session-type-icon" aria-hidden="true">⌁</span><span class="session-main"><strong>${escapeHtml(trace.firstUserMessage || trace.rolloutId || trace.id)}</strong><small>${escapeHtml(trace.rolloutId || trace.id)} · ${new Date(trace.startedAtUnixMs).toLocaleTimeString([], { hour12: false })}${trace.project ? ` · ${escapeHtml(trace.project)}` : ""}</small></span>
       <span class="session-state ${escapeHtml(traceDisplayStatus(trace))}" title="${escapeHtml(sessionStatusDetail(trace))}">${escapeHtml(sessionStatusLabel(trace))}</span><span class="session-model">${escapeHtml((trace.models || []).join(", ") || "未识别")}</span><span class="session-node-count">${trace.tools || 0} 工具</span><span class="session-token-count">${formatCompactTokens((trace.inputTokens || 0) + (trace.outputTokens || 0))}</span><span class="session-duration">${escapeHtml(sessionDurationLabel(trace))}</span>${sessionReductionAction(trace)}<span class="row-arrow" aria-hidden="true">›</span>
-    </div>`).join("") || '<div class="empty">暂无 Trace 数据包</div>';
+    </div>`).join("") || (dayTraces.length
+    ? '<div class="empty-filter"><strong>没有匹配的会话</strong><span>调整搜索词或筛选条件后再试。</span><button id="empty-clear-session-filters" type="button">清除筛选</button></div>'
+    : '<div class="empty-filter"><strong>当天暂无会话</strong><span>刷新后会自动显示新采集的会话。</span></div>');
   elements.sessions.querySelectorAll(".session-row[data-trace]").forEach((row) => {
     const open = () => loadTrace(row.dataset.trace);
     row.addEventListener("click", (event) => {
@@ -253,6 +299,17 @@ function renderSessions() {
       reduceTrace(button.dataset.reduce, { button });
     });
   });
+  document.querySelector("#empty-clear-session-filters")?.addEventListener("click", () => resetSessionFilters());
+}
+
+function resetSessionFilters({ render = true } = {}) {
+  state.sessionQuery = "";
+  state.sessionStatus = "all";
+  state.sessionModel = "all";
+  elements.sessionSearch.value = "";
+  elements.sessionStatusFilter.value = "all";
+  elements.sessionModelFilter.value = "all";
+  if (render) renderSessions();
 }
 
 function sessionReductionAction(trace) {
@@ -753,6 +810,7 @@ function wireTraceResizeHandle() {
     setGraphPanelHeight(drag.graphHeight - (event.clientY - drag.y));
   });
   const stopDragging = () => {
+    if (drag) saveUiPreferences();
     drag = null;
     handle.classList.remove("is-dragging");
     elements.traceNavigation.classList.remove("is-resizing");
@@ -765,14 +823,17 @@ function wireTraceResizeHandle() {
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       event.preventDefault();
       setGraphPanelHeight(current + (event.key === "ArrowUp" ? 24 : -24));
+      saveUiPreferences();
     }
     if (event.key === "Home") {
       event.preventDefault();
       setGraphPanelHeight(graphPanelBounds().min);
+      saveUiPreferences();
     }
     if (event.key === "End") {
       event.preventDefault();
       setGraphPanelHeight(graphPanelBounds().max);
+      saveUiPreferences();
     }
   });
 }
@@ -995,16 +1056,18 @@ function renderReductionRequired(error) {
 async function reduceTrace(id, { button: sourceButton = null } = {}) {
   const button = sourceButton || document.querySelector("#reduce-trace");
   if (button) { button.disabled = true; button.textContent = "准备归约…"; }
-  elements.captureStatus.textContent = "正在归约 Trace…";
+  setCaptureStatus("正在归约 Trace…", "busy");
   try {
     const trace = await api(`/api/traces/${encodeURIComponent(id)}?reduce=1`);
     if (state.route === "trace" && state.selectedTraceId === id) installTrace(id, trace);
     await refresh();
-    elements.captureStatus.textContent = "采集正常";
+    setCaptureStatus("采集正常", "ok");
+    showToast("Trace 归约完成", "success");
   } catch (error) {
     if (state.route === "trace" && state.selectedTraceId === id) renderReductionRequired(error);
     else await refresh();
-    elements.captureStatus.textContent = "归约失败";
+    setCaptureStatus("归约失败", "error");
+    showToast(error.message || "Trace 归约失败", "error");
   } finally {
     if (button && button.isConnected) { button.disabled = false; button.textContent = "重试归约"; }
   }
@@ -1020,6 +1083,7 @@ function installTrace(id, trace, nodeId = "") {
   state.graphPanY = 0;
   state.selectedRowId = nodeId && findTraceNode(state.traceTree, nodeId) ? nodeId : state.traceTree.id;
   showTraceWorkspace(id);
+  if (state.graphPanelHeight != null && !window.matchMedia("(max-width: 900px)").matches) setGraphPanelHeight(state.graphPanelHeight);
   applyMobilePanel("tree");
   renderSummary();
   renderTimeline();
@@ -1043,11 +1107,13 @@ async function loadTrace(id, options = {}) {
   }
 }
 
-async function refresh({ initial = false } = {}) {
+async function refresh({ initial = false, announce = false } = {}) {
   if (state.refreshInFlight) return;
   state.refreshInFlight = true;
   elements.refresh.disabled = true;
-  elements.captureStatus.textContent = "正在刷新…";
+  elements.refresh.classList.add("loading");
+  elements.refresh.setAttribute("aria-busy", "true");
+  setCaptureStatus("正在刷新…", "busy");
   try {
     const [config, result] = await Promise.all([api("/api/config"), api("/api/traces")]);
     state.config = config;
@@ -1055,20 +1121,24 @@ async function refresh({ initial = false } = {}) {
     if (elements.settingsDialog.open) renderSettingsCaptureStatus();
     state.lastRefreshAt = Date.now();
     elements.lastRefresh.textContent = `更新于 ${new Date(state.lastRefreshAt).toLocaleTimeString([], { hour12: false })}`;
-    elements.captureStatus.textContent = config.traceCaptureEnabled ? "采集正常" : "未检测到采集环境变量";
+    setCaptureStatus(config.traceCaptureEnabled ? "采集正常" : "未检测到采集环境变量", config.traceCaptureEnabled ? "ok" : "warn");
     if (state.route === "sessions" && state.selectedDay) renderSessions();
     else if (state.route === "trace" && state.selectedTraceId) await refreshCurrentTrace();
     else if (state.route === "reviews") await loadReviews();
     else renderDays();
     if (initial) syncRouteFromHash();
+    if (announce) showToast(`已刷新，共 ${state.traces.length} 个会话`, "success");
   } catch (error) {
-    elements.captureStatus.textContent = "刷新失败";
+    setCaptureStatus("刷新失败", "error");
+    showToast(error.message || "刷新失败", "error");
     const target = state.route === "sessions" ? elements.sessions : state.route === "days" ? elements.days : elements.timeline;
     target.innerHTML = `<div class="error" role="alert"><strong>刷新失败</strong><p>${escapeHtml(error.message)}</p><button class="retry-button" id="retry-refresh">重试</button></div>`;
     document.querySelector("#retry-refresh")?.addEventListener("click", () => refresh());
   } finally {
     state.refreshInFlight = false;
     elements.refresh.disabled = false;
+    elements.refresh.classList.remove("loading");
+    elements.refresh.removeAttribute("aria-busy");
   }
 }
 
@@ -1273,7 +1343,7 @@ async function openSettings() {
     elements.settingsSaved.textContent = "";
     elements.settingsDialog.showModal();
   } catch (error) {
-    alert(error.message);
+    showToast(error.message || "无法打开设置", "error");
   }
 }
 
@@ -1425,9 +1495,10 @@ elements.mobileTabs.querySelectorAll("[data-mobile-view]").forEach((button) => b
 elements.backToDays.addEventListener("click", showDays);
 document.querySelector('[data-route="days"]').addEventListener("click", showDays);
 elements.breadcrumbDay.addEventListener("click", () => showSessions(state.selectedDay));
-elements.refresh.addEventListener("click", () => refresh());
-elements.refreshInterval.addEventListener("change", scheduleRefresh);
-elements.autoRefresh.addEventListener("change", scheduleRefresh);
+elements.refresh.addEventListener("click", () => refresh({ announce: true }));
+elements.refreshInterval.addEventListener("change", () => { saveUiPreferences(); scheduleRefresh(); });
+elements.autoRefresh.addEventListener("change", () => { saveUiPreferences(); scheduleRefresh(); });
+elements.clearSessionFilters.addEventListener("click", () => resetSessionFilters());
 elements.graphFit.addEventListener("click", () => { fitGraphViewport(elements.graph.querySelector(".graph-viewport")); elements.graph.classList.add("fit-flash"); setTimeout(() => elements.graph.classList.remove("fit-flash"), 500); });
 elements.graphZoomIn.addEventListener("click", () => applyGraphScale(elements.graph.querySelector(".graph-viewport"), state.graphScale * 1.15));
 elements.graphZoomOut.addEventListener("click", () => applyGraphScale(elements.graph.querySelector(".graph-viewport"), state.graphScale * 0.87));
@@ -1459,6 +1530,7 @@ elements.settingsForm.addEventListener("submit", async (event) => {
   try {
     await saveSettings();
     elements.settingsDialog.close();
+    showToast("设置已保存", "success");
   } catch (error) {
     elements.settingsError.textContent = error.message;
   }
@@ -1469,11 +1541,49 @@ window.addEventListener("resize", () => {
   if (state.graphPanelHeight != null && !window.matchMedia("(max-width: 900px)").matches) setGraphPanelHeight(state.graphPanelHeight);
 });
 document.addEventListener("pointerdown", () => { state.isInteracting = true; clearTimeout(state.interactionTimer); state.interactionTimer = setTimeout(() => { state.isInteracting = false; }, 1200); });
-document.addEventListener("keydown", () => { state.isInteracting = true; clearTimeout(state.interactionTimer); state.interactionTimer = setTimeout(() => { state.isInteracting = false; }, 1200); });
+document.addEventListener("keydown", (event) => {
+  state.isInteracting = true;
+  clearTimeout(state.interactionTimer);
+  state.interactionTimer = setTimeout(() => { state.isInteracting = false; }, 1200);
+  handleGlobalShortcut(event);
+});
+
+function handleGlobalShortcut(event) {
+  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || document.querySelector("dialog[open]")) return;
+  const target = event.target;
+  const editing = target instanceof HTMLElement && (target.matches("input, textarea, select") || target.isContentEditable);
+  if (event.key === "/" && !editing) {
+    const search = state.route === "sessions" ? elements.sessionSearch : state.route === "trace" ? elements.treeSearch : null;
+    if (search) {
+      event.preventDefault();
+      search.focus();
+      search.select();
+    }
+    return;
+  }
+  if (editing) return;
+  if (event.key.toLowerCase() === "r") {
+    event.preventDefault();
+    refresh({ announce: true });
+    return;
+  }
+  if (event.key === "Escape") {
+    if (state.route === "trace" && state.selectedDay) showSessions(state.selectedDay);
+    else if (state.route === "sessions") {
+      const filtersActive = Boolean(state.sessionQuery || state.sessionStatus !== "all" || state.sessionModel !== "all");
+      if (filtersActive) resetSessionFilters();
+      else showDays();
+    }
+  }
+}
 function scheduleRefresh() {
   clearInterval(state.refreshTimer);
   const interval = Number(elements.refreshInterval.value);
   if (elements.autoRefresh.checked && interval > 0) state.refreshTimer = setInterval(() => { if (!state.isInteracting && !document.querySelector("dialog[open]")) refresh(); }, interval);
 }
+const uiPreferences = readUiPreferences();
+if (typeof uiPreferences.autoRefresh === "boolean") elements.autoRefresh.checked = uiPreferences.autoRefresh;
+if (["0", "10000", "30000", "60000"].includes(String(uiPreferences.refreshInterval))) elements.refreshInterval.value = String(uiPreferences.refreshInterval);
+if (Number.isFinite(uiPreferences.graphPanelHeight)) state.graphPanelHeight = uiPreferences.graphPanelHeight;
 scheduleRefresh();
 refresh({ initial: true });

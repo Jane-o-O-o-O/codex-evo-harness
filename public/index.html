@@ -19,8 +19,8 @@
         <button class="mode" data-mode="reviews">每日复盘</button>
         <button class="mode" data-mode="settings">设置</button>
       </nav>
-      <div id="global-status" class="global-status" aria-live="polite"><span class="status-dot"></span><span id="capture-status">检查采集状态…</span><small id="last-refresh">尚未刷新</small></div>
-      <div class="toolbar"><label class="refresh-control"><input id="auto-refresh" type="checkbox" checked /> 自动刷新</label><select id="refresh-interval" title="刷新周期"><option value="10000">10 秒</option><option value="30000" selected>30 秒</option><option value="60000">1 分钟</option><option value="0">关闭</option></select><button id="settings-button" title="设置">⚙</button><button id="refresh" title="立即刷新">↻</button></div>
+      <div id="global-status" class="global-status busy" aria-live="polite"><span class="status-dot"></span><span id="capture-status">检查采集状态…</span><small id="last-refresh">尚未刷新</small></div>
+      <div class="toolbar"><label class="refresh-control" title="自动刷新"><input id="auto-refresh" type="checkbox" checked /><span>自动刷新</span></label><select id="refresh-interval" title="刷新周期" aria-label="刷新周期"><option value="10000">10 秒</option><option value="30000" selected>30 秒</option><option value="60000">1 分钟</option><option value="0">关闭</option></select><button id="settings-button" title="设置" aria-label="设置">⚙</button><button id="refresh" title="立即刷新 (R)" aria-label="立即刷新"><span aria-hidden="true">↻</span></button></div>
     </header>
     <main id="day-browser" class="browser-page">
       <div class="browser-header"><div><span class="eyebrow">本地可观测性</span><h1>Codex 活动</h1><p>按日期浏览本地会话与使用情况。</p></div><div class="browser-total"><strong id="day-count">0</strong><span>个活跃日</span></div></div>
@@ -28,14 +28,15 @@
     </main>
     <main id="session-browser" class="browser-page hidden">
       <div class="browser-header"><div><button id="back-to-days" class="back-button">← 日期</button><h1 id="sessions-day-title">会话</h1><p>选择一次会话查看完整轨迹。</p></div><div class="browser-total"><strong id="session-count">0</strong><span>个会话</span></div></div>
-      <div class="list-controls"><div class="session-search standalone"><span>⌕</span><input id="session-search" type="search" placeholder="搜索指令、Rollout ID、项目或模型" /></div><select id="session-status-filter" title="状态筛选"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">运行中</option><option value="aborted">已中止</option><option value="cancelled">已取消</option><option value="reducing">归约中</option><option value="failed">失败</option><option value="raw">待归约</option></select><select id="session-model-filter" title="模型筛选"><option value="all">全部模型</option></select></div>
+      <div class="list-controls"><div class="session-search standalone"><span aria-hidden="true">⌕</span><input id="session-search" type="search" placeholder="搜索指令、Rollout ID、项目或模型" title="搜索会话 (/)" /></div><select id="session-status-filter" title="状态筛选" aria-label="状态筛选"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">运行中</option><option value="aborted">已中止</option><option value="cancelled">已取消</option><option value="reducing">归约中</option><option value="failed">失败</option><option value="raw">待归约</option></select><select id="session-model-filter" title="模型筛选" aria-label="模型筛选"><option value="all">全部模型</option></select></div>
+      <div class="filter-summary"><span id="session-filter-summary">共 0 个会话</span><button id="clear-session-filters" class="clear-filters hidden" type="button">清除筛选</button></div>
       <div class="session-table-head"><span>会话</span><span>状态</span><span>模型</span><span>节点</span><span>Token</span><span>耗时</span><span>操作</span><span></span></div>
       <div id="sessions-list" class="session-table"></div>
     </main>
     <main id="trace-workspace" class="workspace hidden">
       <div id="mobile-view-tabs" class="mobile-view-tabs" role="tablist" aria-label="移动端视图"><button data-mobile-view="tree">树</button><button data-mobile-view="timeline">时间线</button><button data-mobile-view="graph">关系图</button><button data-mobile-view="details">详情</button></div>
       <section class="timeline pane trace-navigation">
-        <div class="trace-tools"><div class="tree-search"><span>⌕</span><input id="tree-search" type="search" placeholder="搜索观察节点" /></div><button id="expand-all" title="展开全部">↕</button></div>
+        <div class="trace-tools"><div class="tree-search"><span aria-hidden="true">⌕</span><input id="tree-search" type="search" placeholder="搜索观察节点" title="搜索观察节点 (/)" /></div><button id="expand-all" title="展开全部" aria-label="展开全部">↕</button></div>
         <div class="tabs" role="tablist" aria-label="Trace 视图">
           <button class="tab active" data-view="tree">树</button>
           <button class="tab" data-view="timeline">时间线</button>
@@ -119,6 +120,7 @@
         <footer class="settings-footer"><button id="run-review" type="button" class="secondary-action">立即生成今日复盘</button><div class="settings-footer-actions"><button type="submit" value="cancel" class="cancel-action">取消</button><button class="primary" value="save">保存设置</button></div></footer>
       </form>
     </dialog>
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
     <script type="module" src="app.js"></script>
   </body>
 </html>
