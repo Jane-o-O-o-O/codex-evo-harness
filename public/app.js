@@ -1202,6 +1202,10 @@ function renderSelectedReview() {
   const topScenario = scenarios[0];
   const topTool = rankedEntries(review.toolUsage || review.toolKinds, 1)[0];
   const inactiveCount = (review.cleanupRecommendations || []).length;
+  const collection = review.collection;
+  const collectionMetric = collection
+    ? `<span>已纳入 <strong>${collection.includedBundles}/${collection.totalBundles} 个会话</strong></span>`
+    : "";
   const llmAnalysis = review.llmAnalysis;
   const llmMetric = llmAnalysis?.status === "completed"
     ? `<span>LLM 分析 <strong>${escapeHtml(llmAnalysis.model || "已完成")}</strong></span>`
@@ -1213,8 +1217,9 @@ function renderSelectedReview() {
       ${statCard("推理 Token", summary.reasoningTokens.toLocaleString())}${statCard("用户消息", summary.userMessages)}${statCard("缓存输入", summary.cachedInputTokens.toLocaleString())}
     </div>`;
   elements.reviewHeader.classList.remove("empty");
-  elements.reviewHeader.innerHTML = `<h1>${review.date} 使用复盘</h1><div class="metrics"><span class="review-generated">生成于 <strong>${new Date(review.generatedAtUnixMs).toLocaleString()}</strong></span><span>完成率 <strong>${completionRate.toFixed(0)}%</strong></span><span>活跃时间 <strong>${formatDuration(summary.activeMs)}</strong></span><span>缓存命中 <strong>${cacheRate.toFixed(1)}%</strong></span>${llmMetric}${topScenario ? `<span>规则主场景 <strong>${escapeHtml(topScenario[0])}</strong></span>` : ""}${topTool ? `<span>高频工具 <strong>${escapeHtml(topTool[0])}</strong></span>` : ""}${inactiveCount ? `<span>长期未使用 <strong>${inactiveCount} 项</strong></span>` : ""}${delta === null ? "" : `<span>较前一日 <strong>${delta >= 0 ? "+" : ""}${delta} 个会话</strong></span>`}</div>`;
+  elements.reviewHeader.innerHTML = `<h1>${review.date} 使用复盘</h1><div class="metrics"><span class="review-generated">生成于 <strong>${new Date(review.generatedAtUnixMs).toLocaleString()}</strong></span>${collectionMetric}<span>完成率 <strong>${completionRate.toFixed(0)}%</strong></span><span>活跃时间 <strong>${formatDuration(summary.activeMs)}</strong></span><span>缓存命中 <strong>${cacheRate.toFixed(1)}%</strong></span>${llmMetric}${topScenario ? `<span>规则主场景 <strong>${escapeHtml(topScenario[0])}</strong></span>` : ""}${topTool ? `<span>高频工具 <strong>${escapeHtml(topTool[0])}</strong></span>` : ""}${inactiveCount ? `<span>长期未使用 <strong>${inactiveCount} 项</strong></span>` : ""}${delta === null ? "" : `<span>较前一日 <strong>${delta >= 0 ? "+" : ""}${delta} 个会话</strong></span>`}</div>`;
   elements.reviewContent.innerHTML = `
+    ${collectionHealthView(collection)}
     ${llmAnalysisView(llmAnalysis)}
     ${reviewSection("规则统计习惯", `<ul class="habit-list">${(review.habits || []).map((habit) => `<li>${escapeHtml(habit)}</li>`).join("") || "<li>数据不足</li>"}</ul>`)}
     ${reviewSection("规则使用场景", scenarioCards(review.scenarioUsage))}
@@ -1231,6 +1236,19 @@ function renderSelectedReview() {
     </div>
     ${reviewSection("长期未使用", inactiveUsage(review.cleanupRecommendations))}
   `;
+}
+
+function collectionHealthView(collection) {
+  if (!collection) return "";
+  const interval = collection.refreshIntervalMinutes || 30;
+  if (!collection.failedBundles && !collection.activeBundles) {
+    return `<div class="collection-health ok"><strong>自动记录正常</strong><span>已纳入当天全部 ${collection.includedBundles} 个会话，本地统计每 ${interval} 分钟自动更新。</span></div>`;
+  }
+  const details = [];
+  if (collection.failedBundles) details.push(`${collection.failedBundles} 个归约失败`);
+  if (collection.activeBundles) details.push(`${collection.activeBundles} 个仍在采集`);
+  const errors = (collection.reductionErrors || []).map((item) => `<li><strong>${escapeHtml(item.id)}</strong><span>${escapeHtml(item.error)}</span></li>`).join("");
+  return `<div class="collection-health warn"><strong>当前复盘为部分数据</strong><span>已纳入 ${collection.includedBundles}/${collection.totalBundles} 个会话；${details.join("，")}。系统将在下一次自动更新时重试。</span>${errors ? `<ul>${errors}</ul>` : ""}</div>`;
 }
 
 function llmAnalysisView(analysis) {

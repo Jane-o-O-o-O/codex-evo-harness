@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { access, open, readFile, readdir, stat } from "node:fs/promises";
+import { access, copyFile, cp, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -368,6 +368,117 @@ function runReducer(codex, bundleDir) {
   });
 }
 
+function duplicateModelCallIdError(error) {
+  return /model-visible call id .* was reused with different content/i.test(error instanceof Error ? error.message : String(error));
+}
+
+function removeReducerIncompatibleMetadata(value) {
+  if (!value || typeof value !== "object") return 0;
+  let removed = 0;
+  if (!Array.isArray(value) && Object.hasOwn(value, "internal_chat_message_metadata_passthrough")) {
+    delete value.internal_chat_message_metadata_passthrough;
+    removed += 1;
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    removed += removeReducerIncompatibleMetadata(child);
+  }
+  return removed;
+}
+
+function removeReducerIncompatibleCustomToolItems(value) {
+  if (!value || typeof value !== "object") return 0;
+  let removed = 0;
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const item = value[index];
+      if (item?.type === "custom_tool_call" || item?.type === "custom_tool_call_output") {
+        value.splice(index, 1);
+        removed += 1;
+        continue;
+      }
+      removed += removeReducerIncompatibleCustomToolItems(item);
+    }
+    return removed;
+  }
+  for (const child of Object.values(value)) {
+    removed += removeReducerIncompatibleCustomToolItems(child);
+  }
+  return removed;
+}
+
+export async function rewritePayloadForCompatibility(source, destination = source, { dropCustomToolItems = false } = {}) {
+  const payload = JSON.parse(await readFile(source, "utf8"));
+  let changed = removeReducerIncompatibleMetadata(payload);
+  if (dropCustomToolItems) changed += removeReducerIncompatibleCustomToolItems(payload);
+  if (changed) await writeFile(destination, JSON.stringify(payload), "utf8");
+  else if (destination !== source) await copyFile(source, destination);
+  return changed;
+}
+
+export async function rewriteTraceLogForCompatibility(source, destination = source) {
+  const raw = await readFile(source, "utf8");
+  let changed = 0;
+  const lines = raw.split(/\r?\n/).map((line, index) => {
+    if (!line) return line;
+    try {
+      const event = JSON.parse(line);
+      const payload = event?.payload;
+      if (payload?.type !== "code_cell_started" || typeof payload.model_visible_call_id !== "string") return line;
+      const suffix = String(payload.runtime_cell_id || index + 1).replace(/[^a-zA-Z0-9_-]/g, "_");
+      payload.model_visible_call_id = `call_viewer_${event.seq || index + 1}_${suffix}`;
+      changed += 1;
+      return JSON.stringify(event);
+    } catch {
+      return line;
+    }
+  });
+  if (changed) await writeFile(destination, lines.join("\n"), "utf8");
+  else if (destination !== source) await copyFile(source, destination);
+  return changed;
+}
+
+export async function runReducerWithCompatibility(codex, bundleDir) {
+  try {
+    await runReducer(codex, bundleDir);
+    return;
+  } catch (error) {
+    if (!duplicateModelCallIdError(error)) throw error;
+  }
+
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "codex-trace-reduce-"));
+  const temporaryBundle = path.join(temporaryRoot, "bundle");
+  try {
+    await cp(bundleDir, temporaryBundle, { recursive: true });
+    const manifest = JSON.parse(await readFile(path.join(temporaryBundle, "manifest.json"), "utf8"));
+    const rawEventLog = path.join(temporaryBundle, manifest.raw_event_log || "trace.jsonl");
+    await rewriteTraceLogForCompatibility(rawEventLog);
+    const payloadsDir = path.join(temporaryBundle, manifest.payloads_dir || "payloads");
+    const payloadEntries = await readdir(payloadsDir, { withFileTypes: true });
+    for (const entry of payloadEntries) {
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") continue;
+      const payloadPath = path.join(payloadsDir, entry.name);
+      const source = await readFile(payloadPath, "utf8");
+      if (!source.includes("internal_chat_message_metadata_passthrough")) continue;
+      await rewritePayloadForCompatibility(payloadPath);
+    }
+    await rm(path.join(temporaryBundle, "state.json"), { force: true });
+    try {
+      await runReducer(codex, temporaryBundle);
+    } catch (error) {
+      if (!duplicateModelCallIdError(error)) throw error;
+      for (const entry of payloadEntries) {
+        if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") continue;
+        await rewritePayloadForCompatibility(path.join(payloadsDir, entry.name), undefined, { dropCustomToolItems: true });
+      }
+      await rm(path.join(temporaryBundle, "state.json"), { force: true });
+      await runReducer(codex, temporaryBundle);
+    }
+    await copyFile(path.join(temporaryBundle, "state.json"), path.join(bundleDir, "state.json"));
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 function json(response, status, body) {
   response.writeHead(status, {
     "content-type": contentTypes[".json"],
@@ -402,7 +513,10 @@ export function createViewerServer(options) {
     codexHome: process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
     reductionPollMs: 1_500,
     reductionStabilityMs: 250,
-    runReducerImpl: runReducer,
+    reductionRetryMs: 30 * 60_000,
+    reviewRefreshMs: 30 * 60_000,
+    initialReviewDelayMs: 5_000,
+    runReducerImpl: runReducerWithCompatibility,
     fetchImpl: globalThis.fetch,
     ...options,
   };
@@ -410,6 +524,7 @@ export function createViewerServer(options) {
   const reductionChecks = new Map();
   const reductionStates = new Map();
   let settingsPromise = loadSettings(options.dataRoot);
+  let reviewRunChain = Promise.resolve();
 
   function reductionError(error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -461,27 +576,32 @@ export function createViewerServer(options) {
   async function queueCompletedRawBundles() {
     const bundles = await discoverBundles(options.traceRoot, reductionStates);
     for (const bundle of bundles) {
-      if (bundle.reducedAtUnixMs || !bundle.complete || bundle.status === "reducing" || bundle.status === "failed") continue;
+      if (bundle.reducedAtUnixMs || !bundle.complete || bundle.status === "reducing") continue;
       const bundleDir = safeChild(options.traceRoot, bundle.id);
+      const failedState = reductionStates.get(bundleDir);
+      if (failedState?.status === "failed" && Date.now() - failedState.failedAtUnixMs < options.reductionRetryMs) continue;
       if (reductionChecks.has(bundleDir)) continue;
       const check = rawLogStable(bundleDir, options.reductionStabilityMs)
-        .then((stable) => stable ? startReduction(bundle).catch(() => {}) : undefined)
+        .then((stable) => stable ? startReduction(bundle, { force: failedState?.status === "failed" }).catch(() => {}) : undefined)
         .finally(() => reductionChecks.delete(bundleDir));
       reductionChecks.set(bundleDir, check);
     }
   }
 
-  async function runDailyReview(date = localDate(), markScheduled = false) {
+  async function runDailyReviewNow(date = localDate(), { markScheduled = false, includeLlm = true } = {}) {
     await queueCompletedRawBundles();
     const bundles = await discoverBundles(options.traceRoot, reductionStates);
     const dayBundles = bundles.filter((bundle) => localDate(bundle.startedAtUnixMs) === date);
     const traces = [];
+    const reductionErrors = [];
     for (const bundle of dayBundles) {
       if (!bundle.complete) continue;
       try {
-        traces.push(await reduceBundle(bundle));
+        traces.push(await reduceBundle(bundle, { force: bundle.reductionStatus === "failed" || bundle.status === "failed" }));
       } catch (error) {
-        console.error(`trace reduction failed for ${bundle.id}: ${reductionError(error)}`);
+        const message = reductionError(error);
+        reductionErrors.push({ id: bundle.id, error: message });
+        console.error(`trace reduction failed for ${bundle.id}: ${message}`);
       }
     }
     const [inventory, storedReviews] = await Promise.all([
@@ -491,7 +611,15 @@ export function createViewerServer(options) {
     const previousReviews = storedReviews.filter((review) => review.date !== date);
     const settings = await settingsPromise;
     const report = await buildDailyReview({ date, traces, inventory, previousReviews, bundleRoot: options.traceRoot, settings });
-    if (settings.llmEnabled) {
+    report.collection = {
+      totalBundles: dayBundles.length,
+      includedBundles: traces.length,
+      failedBundles: reductionErrors.length,
+      activeBundles: dayBundles.filter((bundle) => !bundle.complete).length,
+      refreshIntervalMinutes: Math.max(1, Math.round(options.reviewRefreshMs / 60_000)),
+      reductionErrors: reductionErrors.slice(0, 10),
+    };
+    if (settings.llmEnabled && includeLlm) {
       if (report.summary.sessions === 0) {
         report.llmAnalysis = { status: "skipped", model: settings.llmModel, reason: "当天没有可分析的会话" };
       } else {
@@ -506,6 +634,12 @@ export function createViewerServer(options) {
           };
         }
       }
+    } else if (settings.llmEnabled) {
+      report.llmAnalysis = {
+        status: "skipped",
+        model: settings.llmModel,
+        reason: "半小时自动更新只刷新本地统计；手动或每日计划复盘会重新执行 LLM 分析",
+      };
     }
     await storeReview(report, options.dataRoot);
     await pruneReviews(options.dataRoot, settings.retentionDays);
@@ -514,6 +648,12 @@ export function createViewerServer(options) {
       await saveSettings(settings);
     }
     return report;
+  }
+
+  function runDailyReview(date = localDate(), options = {}) {
+    const run = reviewRunChain.then(() => runDailyReviewNow(date, options));
+    reviewRunChain = run.catch(() => {});
+    return run;
   }
 
   const server = createServer(async (request, response) => {
@@ -526,6 +666,7 @@ export function createViewerServer(options) {
           codexHome: options.codexHome,
           codexExecutable: options.codex,
           traceCaptureEnabled: Boolean(process.env.CODEX_ROLLOUT_TRACE_ROOT),
+          reviewRefreshMinutes: Math.max(1, Math.round(options.reviewRefreshMs / 60_000)),
           refreshedAtUnixMs: Date.now(),
         });
         return;
@@ -557,7 +698,7 @@ export function createViewerServer(options) {
         return;
       }
       if (url.pathname === "/api/reviews/run" && request.method === "POST") {
-        json(response, 200, await runDailyReview(url.searchParams.get("date") || localDate()));
+        json(response, 200, await runDailyReview(url.searchParams.get("date") || localDate(), { includeLlm: true }));
         return;
       }
       const reviewMatch = url.pathname.match(/^\/api\/reviews\/(\d{4}-\d{2}-\d{2})$/);
@@ -655,15 +796,29 @@ export function createViewerServer(options) {
   const scheduler = setInterval(async () => {
     try {
       const settings = await settingsPromise;
-      if (shouldRunScheduledReview(settings)) await runDailyReview(localDate(), true);
+      if (shouldRunScheduledReview(settings)) await runDailyReview(localDate(), { markScheduled: true, includeLlm: true });
     } catch (error) {
       console.error(`daily review failed: ${error instanceof Error ? error.message : error}`);
     }
   }, 30_000);
   scheduler.unref();
+  const refreshReview = async () => {
+    try {
+      const settings = await settingsPromise;
+      if (settings.enabled) await runDailyReview(localDate(), { includeLlm: false });
+    } catch (error) {
+      console.error(`automatic review refresh failed: ${error instanceof Error ? error.message : error}`);
+    }
+  };
+  const reviewRefreshScheduler = setInterval(refreshReview, options.reviewRefreshMs);
+  reviewRefreshScheduler.unref();
+  const initialReviewTimer = setTimeout(refreshReview, options.initialReviewDelayMs);
+  initialReviewTimer.unref();
   server.on("close", () => {
     clearInterval(scheduler);
     clearInterval(reductionScheduler);
+    clearInterval(reviewRefreshScheduler);
+    clearTimeout(initialReviewTimer);
   });
   void queueCompletedRawBundles().catch((error) => console.error(`trace reduction queue failed: ${reductionError(error)}`));
   return server;

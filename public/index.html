@@ -92,8 +92,8 @@
 
             <section id="settings-section-review" class="settings-section" data-settings-panel="review" tabindex="-1">
               <div class="section-heading-large"><div><span class="section-kicker">02 / DAILY REVIEW</span><h3>每日复盘</h3><p>在本地汇总会话、工具、Skill、MCP 和使用场景。</p></div><label class="settings-toggle"><input name="enabled" type="checkbox" /><span class="toggle-track" aria-hidden="true"></span><strong>启用</strong></label></div>
-              <div class="settings-field-grid single-column"><label class="field"><span class="field-copy"><strong>每日运行时间</strong><small>使用本机时区；服务保持运行时会自动执行。</small></span><input name="scheduleTime" type="time" required /></label></div>
-              <div class="settings-callout"><strong>运行方式</strong><span>日报只使用本地聚合数据。没有会话时不会生成空报告，也不会自动删除 trace、Skill 或 MCP。</span></div>
+              <div class="settings-field-grid single-column"><label class="field"><span class="field-copy"><strong>每日完整复盘时间</strong><small>使用本机时区；到点后会执行完整统计和可选的 LLM 分析。</small></span><input name="scheduleTime" type="time" required /></label></div>
+              <div class="settings-callout"><strong>自动记录</strong><span>当天本地统计会在启动后自动生成，并每 30 分钟按“归约 Trace → 更新复盘”的顺序刷新。不会自动删除 trace、Skill 或 MCP。</span></div>
             </section>
 
             <section id="settings-section-llm" class="settings-section" data-settings-panel="llm" tabindex="-1">

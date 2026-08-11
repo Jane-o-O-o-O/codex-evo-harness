@@ -323,6 +323,14 @@ pre { max-height: 460px; margin: 0; padding: 12px; overflow: auto; border: 1px s
 .llm-analysis-state.failed { border-left-color: #fb7185; background: #21171a; }
 .llm-analysis-state.failed strong { color: #fda4af; }
 .review-empty { padding: 14px; border: 1px dashed #3c3c42; color: #777780; font-size: 11px; }
+.collection-health { display: grid; gap: 5px; margin-bottom: 18px; padding: 12px 14px; border-left: 3px solid #22c55e; color: #9b9ba3; background: #151a18; font-size: 11px; line-height: 1.5; }
+.collection-health strong { color: #d4d4d8; }
+.collection-health.warn { border-left-color: #eab308; background: #211d13; }
+.collection-health.warn > strong { color: #fde68a; }
+.collection-health ul { display: grid; gap: 6px; margin: 5px 0 0; padding: 0; list-style: none; }
+.collection-health li { display: grid; gap: 2px; padding-top: 6px; border-top: 1px solid #3d3522; }
+.collection-health li strong { overflow: hidden; color: #d6d3d1; text-overflow: ellipsis; white-space: nowrap; font: 10px Consolas, monospace; }
+.collection-health li span { color: #d6a95f; overflow-wrap: anywhere; font: 10px/1.45 Consolas, monospace; }
 .habit-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
 .habit-list li { min-width: 0; padding: 10px 12px; border-left: 2px solid #a855f7; color: #b7b7be; background: #18181a; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .inactive-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }

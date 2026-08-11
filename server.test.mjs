@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { fileURLToPath } from "node:url";
 
-import { createViewerServer, parseArgs, safeChild } from "./server.mjs";
+import { createViewerServer, parseArgs, rewritePayloadForCompatibility, rewriteTraceLogForCompatibility, safeChild } from "./server.mjs";
 import { localDate } from "./insights.mjs";
 
 const fixtureRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -37,6 +37,55 @@ test("safeChild accepts descendants and rejects traversal", () => {
 test("parseArgs rejects invalid ports and unknown arguments", () => {
   assert.throws(() => parseArgs(["--port", "0"]), /--port/);
   assert.throws(() => parseArgs(["--wat"]), /unknown argument/);
+});
+
+test("compatibility rewrite removes only reducer-incompatible internal metadata", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codex-trace-compat-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source.json");
+  const destination = path.join(root, "destination.json");
+  const payload = {
+    output_items: [{
+      type: "custom_tool_call",
+      call_id: "call_duplicate",
+      input: "work()",
+      internal_chat_message_metadata_passthrough: { code_mode_runtime_tool_id: "tool-1" },
+    }],
+    untouched: { value: 42 },
+  };
+  await writeFile(source, JSON.stringify(payload));
+  assert.equal(await rewritePayloadForCompatibility(source, destination), 1);
+  const rewritten = JSON.parse(await readFile(destination, "utf8"));
+  assert.equal("internal_chat_message_metadata_passthrough" in rewritten.output_items[0], false);
+  assert.equal(rewritten.output_items[0].call_id, "call_duplicate");
+  assert.equal(rewritten.output_items[0].input, "work()");
+  assert.deepEqual(rewritten.untouched, { value: 42 });
+
+  const customToolSource = path.join(root, "custom-tool-source.json");
+  const customToolDestination = path.join(root, "custom-tool-destination.json");
+  await writeFile(customToolSource, JSON.stringify({
+    input: [
+      { type: "message", role: "user", content: "keep" },
+      { type: "custom_tool_call", call_id: "call_duplicate", input: "work()" },
+      { type: "custom_tool_call_output", call_id: "call_duplicate", output: [{ type: "text", text: "done" }] },
+    ],
+  }));
+  assert.equal(await rewritePayloadForCompatibility(customToolSource, customToolDestination, { dropCustomToolItems: true }), 2);
+  const customToolRewritten = JSON.parse(await readFile(customToolDestination, "utf8"));
+  assert.deepEqual(customToolRewritten.input, [{ type: "message", role: "user", content: "keep" }]);
+
+  const traceSource = path.join(root, "trace-source.jsonl");
+  const traceDestination = path.join(root, "trace-destination.jsonl");
+  const events = [
+    { seq: 10, payload: { type: "code_cell_started", runtime_cell_id: "31", model_visible_call_id: "call_duplicate", source_js: "work()" } },
+    { seq: 11, payload: { type: "tool_call_started", model_visible_call_id: "call_duplicate" } },
+  ];
+  await writeFile(traceSource, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  assert.equal(await rewriteTraceLogForCompatibility(traceSource, traceDestination), 1);
+  const traceEvents = (await readFile(traceDestination, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(traceEvents[0].payload.model_visible_call_id, "call_viewer_10_31");
+  assert.equal(traceEvents[0].payload.source_js, "work()");
+  assert.equal(traceEvents[1].payload.model_visible_call_id, "call_duplicate");
 });
 
 test("viewer serves trace state and referenced payloads", async (context) => {
@@ -191,6 +240,58 @@ test("viewer automatically reduces completed raw bundles and leaves active bundl
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(reducerCalls, 2);
+});
+
+test("viewer refreshes the current daily review automatically", async (context) => {
+  const traceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-review-traces-"));
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "codex-review-data-"));
+  const now = Date.now();
+  const bundleDir = path.join(traceRoot, "today");
+  await mkdir(bundleDir, { recursive: true });
+  await writeFile(path.join(bundleDir, "manifest.json"), JSON.stringify({
+    schema_version: 1,
+    trace_id: "trace-today",
+    rollout_id: "rollout-today",
+    root_thread_id: "thread-root",
+    started_at_unix_ms: now,
+    raw_event_log: "trace.jsonl",
+    payloads_dir: "payloads",
+  }));
+  const state = JSON.parse(await readFile(path.join(fixtureRoot, "sample", "state.json"), "utf8"));
+  state.trace_id = "trace-today";
+  state.rollout_id = "rollout-today";
+  state.started_at_unix_ms = now;
+  state.ended_at_unix_ms = now + 4_200;
+  await writeFile(path.join(bundleDir, "state.json"), JSON.stringify(state));
+
+  const server = createViewerServer({
+    traceRoot,
+    dataRoot,
+    codexHome: dataRoot,
+    codex: "unused",
+    initialReviewDelayMs: 10,
+    reviewRefreshMs: 60_000,
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => server.close());
+  context.after(() => rm(traceRoot, { recursive: true, force: true }));
+  context.after(() => rm(dataRoot, { recursive: true, force: true }));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  const date = localDate(now);
+  const deadline = Date.now() + 1_000;
+  let review;
+  do {
+    const reviews = await fetch(`${base}/api/reviews`).then((response) => response.json());
+    review = reviews.reviews.find((item) => item.date === date);
+    if (review) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+
+  assert.equal(review?.summary.sessions, 1);
+  assert.equal(review?.collection.totalBundles, 1);
+  assert.equal(review?.collection.includedBundles, 1);
+  assert.equal(review?.collection.refreshIntervalMinutes, 1);
 });
 
 test("viewer separates the latest turn status from an open rollout", async (context) => {
