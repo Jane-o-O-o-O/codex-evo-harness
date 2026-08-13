@@ -26,8 +26,8 @@ export async function agentDashboard(context) {
   const pending = proposals.filter((item) => item.status === "pending");
   const lastAnalyzedRun = runs.find((item) => item.analysisCursor && ["awaiting_approval", "completed"].includes(item.state));
   return {
-    configured: Boolean(context.settings.agentEnabled && context.settings.agentModel),
-    model: context.settings.agentModel || null,
+    configured: Boolean(context.settings.agentEnabled && (context.settings.llmModel || context.settings.agentModel)),
+    model: context.settings.llmModel || context.settings.agentModel || null,
     traceCursor: index.cursor,
     incrementalCursor: lastAnalyzedRun?.analysisCursor || null,
     incrementalSinceRunId: lastAnalyzedRun?.id || null,

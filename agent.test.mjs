@@ -22,9 +22,32 @@ import {
 import { findTraceFeedback, getConversationWindow, getTracePayload, listTraceSessions, refreshTraceIndex } from "./trace-query.mjs";
 import { createHarnessSnapshot, inspectConfig, listInstructions, listPlugins, listSkills, readInstruction } from "./harness-tools.mjs";
 import { applyHarnessOperation, rollbackHarnessChange, verifyHarnessChange } from "./harness-mutations.mjs";
-import { startAgentAnalysis } from "./agent-engine.mjs";
+import { startAgentAnalysis, testAgentConnection } from "./agent-engine.mjs";
 import { agentDashboard, agentEvidenceDetail, applyAgentProposal, decideAgentProposal, recoverInterruptedAgentState } from "./agent-service.mjs";
 import { resolveCodexLaunch } from "./codex-cli.mjs";
+
+test("Agent model calls prefer the shared model service configuration", async () => {
+  let request;
+  const result = await testAgentConnection({
+    llmBaseUrl: "https://shared.example/v1",
+    llmModel: "shared-model",
+    llmApiKey: "shared-key",
+    llmTimeoutSeconds: 30,
+    agentBaseUrl: "https://legacy.example/v1",
+    agentModel: "legacy-model",
+    agentApiKey: "legacy-key",
+    agentTimeoutSeconds: 60,
+  }, {
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200 });
+    },
+  });
+  assert.equal(request.url, "https://shared.example/v1/chat/completions");
+  assert.equal(request.options.headers.authorization, "Bearer shared-key");
+  assert.equal(JSON.parse(request.options.body).model, "shared-model");
+  assert.equal(result.model, "shared-model");
+});
 
 test("Agent run state machine rejects invalid transitions", () => {
   assert.doesNotThrow(() => assertRunTransition("idle", "analyzing"));

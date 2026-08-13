@@ -8,6 +8,45 @@ export function chatCompletionsUrl(baseUrl) {
   return `${normalized}/chat/completions`;
 }
 
+export function modelsUrl(baseUrl) {
+  const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(normalized)) return normalized.replace(/\/chat\/completions$/i, "/models");
+  if (/\/models$/i.test(normalized)) return normalized;
+  return `${normalized}/models`;
+}
+
+export async function discoverModels(settings, { fetchImpl = globalThis.fetch } = {}) {
+  if (typeof fetchImpl !== "function") throw new Error("当前 Node.js 环境不支持 fetch");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), settings.llmTimeoutSeconds * 1_000);
+  const headers = {};
+  if (settings.llmApiKey) headers.authorization = `Bearer ${settings.llmApiKey}`;
+  let response;
+  let text;
+  try {
+    response = await fetchImpl(modelsUrl(settings.llmBaseUrl), { headers, signal: controller.signal });
+    text = await readBoundedResponseText(response);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`发现模型请求超过 ${settings.llmTimeoutSeconds} 秒`);
+    if (error?.message === "LLM 响应超过 1 MB") throw error;
+    throw new Error(`无法获取模型列表：${boundedText(error?.message || error, settings.llmApiKey)}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`模型列表 API 返回 HTTP ${response.status}：${boundedText(text || response.statusText, settings.llmApiKey)}`);
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error("模型列表 API 返回的响应不是有效 JSON");
+  }
+  const source = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+  const models = [...new Set(source.map((item) => typeof item === "string" ? item : item?.id || item?.name).filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()))]
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+  if (!models.length) throw new Error("模型列表为空或响应中缺少 data[].id");
+  return { models };
+}
+
 export async function analyzeDailyReview(report, settings, options = {}) {
   const content = await callChatCompletion(settings, [
     {

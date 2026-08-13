@@ -72,13 +72,12 @@ const elements = {
   llmFields: document.querySelector("#llm-settings-fields"),
   llmKeyState: document.querySelector("#llm-key-state"),
   llmClearKeyField: document.querySelector("#llm-clear-key-field"),
+  modelSelect: document.querySelector("#model-select"),
+  discoverModels: document.querySelector("#discover-models"),
   llmTest: document.querySelector("#test-llm"),
   llmTestStatus: document.querySelector("#llm-test-status"),
   agentEnabled: document.querySelector("#agent-enabled"),
   agentFields: document.querySelector("#agent-settings-fields"),
-  agentKeyState: document.querySelector("#agent-key-state"),
-  agentClearKeyField: document.querySelector("#agent-clear-key-field"),
-  agentTest: document.querySelector("#test-agent"),
   agentTestStatus: document.querySelector("#agent-test-status"),
   traceRootSetting: document.querySelector("#trace-root-setting"),
   codexExecutable: document.querySelector("#codex-executable"),
@@ -1584,7 +1583,7 @@ async function openSettings() {
     elements.settingsForm.elements.retentionDays.value = state.settings.retentionDays;
     elements.settingsForm.elements.llmEnabled.checked = state.settings.llmEnabled;
     elements.settingsForm.elements.llmBaseUrl.value = state.settings.llmBaseUrl;
-    elements.settingsForm.elements.llmModel.value = state.settings.llmModel;
+    setModelOptions([], state.settings.llmModel);
     elements.settingsForm.elements.llmApiKey.value = "";
     elements.settingsForm.elements.llmTimeoutSeconds.value = state.settings.llmTimeoutSeconds;
     elements.settingsForm.elements.clearLlmApiKey.checked = false;
@@ -1593,10 +1592,6 @@ async function openSettings() {
     elements.llmTestStatus.textContent = "";
     elements.llmTestStatus.className = "";
     elements.settingsForm.elements.agentEnabled.checked = state.settings.agentEnabled;
-    elements.settingsForm.elements.agentBaseUrl.value = state.settings.agentBaseUrl;
-    elements.settingsForm.elements.agentModel.value = state.settings.agentModel;
-    elements.settingsForm.elements.agentApiKey.value = "";
-    elements.settingsForm.elements.agentTimeoutSeconds.value = state.settings.agentTimeoutSeconds;
     elements.settingsForm.elements.agentMaxRounds.value = state.settings.agentMaxRounds;
     elements.settingsForm.elements.agentMaxTokens.value = state.settings.agentMaxTokens;
     elements.settingsForm.elements.agentMaxInputBytes.value = state.settings.agentMaxInputBytes;
@@ -1605,12 +1600,9 @@ async function openSettings() {
     elements.settingsForm.elements.agentLookbackDays.value = state.settings.agentLookbackDays;
     elements.settingsForm.elements.agentProjectAllowlist.value = (state.settings.agentProjectAllowlist || []).join("\n");
     elements.settingsForm.elements.agentAllowPayloads.checked = state.settings.agentAllowPayloads !== false;
-    elements.settingsForm.elements.clearAgentApiKey.checked = false;
-    elements.agentKeyState.textContent = state.settings.agentApiKeyConfigured ? "已保存密钥，留空将继续使用" : "尚未保存密钥；本地服务可留空";
-    elements.agentClearKeyField.classList.toggle("hidden", !state.settings.agentApiKeyConfigured);
-    elements.agentTestStatus.textContent = "";
+    elements.agentTestStatus.textContent = state.settings.llmModel ? `当前共享模型：${state.settings.llmModel}` : "请先在模型服务中发现并选择模型。";
     elements.agentTestStatus.className = "";
-    syncLlmSettingsFields();
+    syncSharedModelSettings();
     syncAgentSettingsFields();
     document.querySelector("#data-root").textContent = state.config?.dataRoot || state.settings.dataRoot || "未配置";
     elements.traceRootSetting.textContent = state.config?.traceRoot || "未配置";
@@ -1679,18 +1671,17 @@ async function copySettingPath(button) {
   }
 }
 
-function syncLlmSettingsFields() {
-  elements.llmFields.disabled = !elements.llmEnabled.checked;
+function syncSharedModelSettings() {
+  elements.modelSelect.required = elements.llmEnabled.checked || elements.agentEnabled.checked;
 }
 
 function syncAgentSettingsFields() {
   elements.agentFields.disabled = !elements.agentEnabled.checked;
 }
 
-function llmSettingsPayload() {
+function sharedModelSettingsPayload() {
   const form = elements.settingsForm.elements;
   const payload = {
-    llmEnabled: form.llmEnabled.checked,
     llmBaseUrl: form.llmBaseUrl.value,
     llmModel: form.llmModel.value,
     llmTimeoutSeconds: Number(form.llmTimeoutSeconds.value),
@@ -1704,9 +1695,6 @@ function agentSettingsPayload() {
   const form = elements.settingsForm.elements;
   const payload = {
     agentEnabled: form.agentEnabled.checked,
-    agentBaseUrl: form.agentBaseUrl.value,
-    agentModel: form.agentModel.value,
-    agentTimeoutSeconds: Number(form.agentTimeoutSeconds.value),
     agentMaxRounds: Number(form.agentMaxRounds.value),
     agentMaxTokens: Number(form.agentMaxTokens.value),
     agentMaxInputBytes: Number(form.agentMaxInputBytes.value),
@@ -1716,9 +1704,36 @@ function agentSettingsPayload() {
     agentProjectAllowlist: form.agentProjectAllowlist.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
     agentAllowPayloads: form.agentAllowPayloads.checked,
   };
-  if (form.agentApiKey.value.trim()) payload.agentApiKey = form.agentApiKey.value.trim();
-  if (form.clearAgentApiKey.checked) payload.clearAgentApiKey = true;
   return payload;
+}
+
+function setModelOptions(models, selected = "") {
+  const values = [...new Set([selected, ...models].filter(Boolean))];
+  elements.modelSelect.replaceChildren();
+  if (!values.length) elements.modelSelect.add(new Option("请先发现模型", ""));
+  else for (const model of values) elements.modelSelect.add(new Option(model, model));
+  elements.modelSelect.value = selected || values[0] || "";
+}
+
+async function discoverModelOptions() {
+  const form = elements.settingsForm.elements;
+  if (!form.llmBaseUrl.reportValidity()) return;
+  elements.discoverModels.disabled = true;
+  elements.llmTestStatus.className = "";
+  elements.llmTestStatus.textContent = "正在发现模型…";
+  try {
+    const selected = form.llmModel.value;
+    const result = await api("/api/settings/models", { method: "POST", body: JSON.stringify(sharedModelSettingsPayload()) });
+    setModelOptions(result.models, result.models.includes(selected) ? selected : result.models[0]);
+    setSettingsDirty();
+    elements.llmTestStatus.className = "success-text";
+    elements.llmTestStatus.textContent = `已发现 ${result.models.length} 个模型`;
+  } catch (error) {
+    elements.llmTestStatus.className = "error-text";
+    elements.llmTestStatus.textContent = error.message;
+  } finally {
+    elements.discoverModels.disabled = false;
+  }
 }
 
 async function saveSettings() {
@@ -1730,53 +1745,25 @@ async function saveSettings() {
     inactiveSkillDays: Number(form.inactiveSkillDays.value),
     inactiveMcpDays: Number(form.inactiveMcpDays.value),
     retentionDays: Number(form.retentionDays.value),
-    ...llmSettingsPayload(),
+    llmEnabled: form.llmEnabled.checked,
+    ...sharedModelSettingsPayload(),
     ...agentSettingsPayload(),
   };
   state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
   form.llmApiKey.value = "";
   form.clearLlmApiKey.checked = false;
-  form.agentApiKey.value = "";
-  form.clearAgentApiKey.checked = false;
   state.settingsDirty = false;
   updateSettingsDraftStatus();
   elements.settingsSaved.textContent = "已保存设置";
 }
 
-async function testAgentSettings() {
-  if (!elements.agentEnabled.checked) {
-    elements.agentTestStatus.className = "error-text";
-    elements.agentTestStatus.textContent = "请先启用 Agent";
-    return;
-  }
-  if (!elements.settingsForm.reportValidity()) return;
-  elements.agentTest.disabled = true;
-  elements.agentTestStatus.className = "";
-  elements.agentTestStatus.textContent = "正在连接…";
-  try {
-    const result = await api("/api/settings/test-agent", { method: "POST", body: JSON.stringify(agentSettingsPayload()) });
-    elements.agentTestStatus.className = "success-text";
-    elements.agentTestStatus.textContent = `连接成功 · ${result.model} · ${result.latencyMs} ms`;
-  } catch (error) {
-    elements.agentTestStatus.className = "error-text";
-    elements.agentTestStatus.textContent = error.message;
-  } finally {
-    elements.agentTest.disabled = false;
-  }
-}
-
 async function testLlmSettings() {
-  if (!elements.llmEnabled.checked) {
-    elements.llmTestStatus.className = "error-text";
-    elements.llmTestStatus.textContent = "请先启用 LLM 智能分析";
-    return;
-  }
   if (!elements.settingsForm.reportValidity()) return;
   elements.llmTest.disabled = true;
   elements.llmTestStatus.className = "";
   elements.llmTestStatus.textContent = "正在连接…";
   try {
-    const result = await api("/api/settings/test-llm", { method: "POST", body: JSON.stringify(llmSettingsPayload()) });
+    const result = await api("/api/settings/test-llm", { method: "POST", body: JSON.stringify(sharedModelSettingsPayload()) });
     elements.llmTestStatus.className = "success-text";
     elements.llmTestStatus.textContent = `连接成功 · ${result.model} · ${result.latencyMs} ms`;
   } catch (error) {
@@ -1844,10 +1831,10 @@ document.querySelectorAll(".settings-nav-item").forEach((button) => button.addEv
 document.querySelectorAll(".path-copy").forEach((button) => button.addEventListener("click", () => copySettingPath(button)));
 elements.settingsForm.addEventListener("input", setSettingsDirty);
 elements.settingsForm.addEventListener("change", setSettingsDirty);
-elements.llmEnabled.addEventListener("change", syncLlmSettingsFields);
+elements.llmEnabled.addEventListener("change", syncSharedModelSettings);
+elements.discoverModels.addEventListener("click", discoverModelOptions);
 elements.llmTest.addEventListener("click", testLlmSettings);
-elements.agentEnabled.addEventListener("change", syncAgentSettingsFields);
-elements.agentTest.addEventListener("click", testAgentSettings);
+elements.agentEnabled.addEventListener("change", () => { syncSharedModelSettings(); syncAgentSettingsFields(); });
 elements.agentRunFull.addEventListener("click", () => startAgentRun("full"));
 elements.agentRunIncremental.addEventListener("click", () => startAgentRun("incremental"));
 elements.agentRefresh.addEventListener("click", () => loadAgentDashboard());

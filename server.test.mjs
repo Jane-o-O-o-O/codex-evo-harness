@@ -107,6 +107,10 @@ test("viewer serves trace state and referenced payloads", async (context) => {
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), "codex-viewer-"));
   const llmRequests = [];
   const fetchImpl = async (url, options) => {
+    if (String(url).endsWith("/models")) {
+      llmRequests.push({ url, headers: options.headers, method: "GET" });
+      return new Response(JSON.stringify({ data: [{ id: "analysis-model" }, { id: "backup-model" }] }), { status: 200 });
+    }
     const body = JSON.parse(options.body);
     llmRequests.push({ url, headers: options.headers, body });
     const isConnectionTest = body.messages[0].content.includes("连接测试");
@@ -167,9 +171,6 @@ test("viewer serves trace state and referenced payloads", async (context) => {
       llmModel: "analysis-model",
       llmApiKey: "private-key",
       agentEnabled: true,
-      agentBaseUrl: "https://agent.example/v1",
-      agentModel: "agent-model",
-      agentApiKey: "agent-private-key",
       agentMaxTokens: 120_000,
       agentLookbackDays: 45,
       agentProjectAllowlist: [fixtureRoot],
@@ -180,16 +181,23 @@ test("viewer serves trace state and referenced payloads", async (context) => {
   assert.equal(settings.inactiveSkillDays, 60);
   assert.equal(settings.llmApiKeyConfigured, true);
   assert.equal("llmApiKey" in settings, false);
-  assert.equal(settings.agentApiKeyConfigured, true);
   assert.equal(settings.agentMaxTokens, 120_000);
   assert.equal(settings.agentLookbackDays, 45);
   assert.deepEqual(settings.agentProjectAllowlist, [path.resolve(fixtureRoot)]);
   assert.equal(settings.agentAllowPayloads, false);
-  assert.equal("agentApiKey" in settings, false);
+  assert.equal("agentModel" in settings, false);
 
   const persistedSettings = JSON.parse(await readFile(path.join(dataRoot, "settings.json"), "utf8"));
-  assert.equal(persistedSettings.agentApiKey, "agent-private-key");
+  assert.equal(persistedSettings.llmApiKey, "private-key");
+  assert.equal("agentApiKey" in persistedSettings, false);
   assert.equal(persistedSettings.agentMaxTokens, 120_000);
+
+  const models = await fetch(`${base}/api/settings/models`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ llmBaseUrl: "https://llm.example/v1" }),
+  }).then((response) => response.json());
+  assert.deepEqual(models.models, ["analysis-model", "backup-model"]);
 
   const evidence = await fetch(`${base}/api/agent/evidence?bundleId=sample&itemId=item-user`).then((response) => response.json());
   assert.equal(evidence.kind, "conversation_window");
@@ -208,7 +216,7 @@ test("viewer serves trace state and referenced payloads", async (context) => {
   assert.equal(review.error, undefined, review.error);
   assert.equal(review.llmAnalysis.status, "completed");
   assert.equal(review.llmAnalysis.scenarios[0].name, "代码质量");
-  assert.equal(llmRequests.length, 2);
+  assert.equal(llmRequests.length, 3);
   assert.equal(llmRequests[0].headers.authorization, "Bearer private-key");
 });
 

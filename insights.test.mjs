@@ -35,17 +35,16 @@ test("settings validation accepts schedule changes and rejects bad values", () =
     llmApiKey: "secret",
     llmTimeoutSeconds: 90,
   }, current);
-  const { llmApiKey: _llmApiKey, agentApiKey: _agentApiKey, ...visibleLlmSettings } = llmSettings;
+  const { llmApiKey: _llmApiKey, ...visibleLlmSettings } = llmSettings;
   assert.deepEqual(settingsForClient(llmSettings), {
     ...visibleLlmSettings,
     llmApiKeyConfigured: true,
-    agentApiKeyConfigured: false,
   });
   assert.equal(validateSettings({ clearLlmApiKey: true }, llmSettings).llmApiKey, "");
   assert.throws(() => validateSettings({ scheduleTime: "25:00" }, current), /HH:MM/);
   assert.throws(() => validateSettings({ inactiveMcpDays: 0 }, current), /inactiveMcpDays/);
   assert.throws(() => validateSettings({ llmBaseUrl: "file:///tmp/model" }, current), /http or https/);
-  assert.throws(() => validateSettings({ llmEnabled: true }, current), /模型名称/);
+  assert.throws(() => validateSettings({ llmEnabled: true }, current), /发现并选择模型/);
   const agentSettings = validateSettings({
     agentEnabled: true,
     agentBaseUrl: "http://127.0.0.1:11434/v1",
@@ -57,13 +56,38 @@ test("settings validation accepts schedule changes and rejects bad values", () =
     agentProjectAllowlist: [projectPath],
     agentAllowPayloads: false,
   }, current);
-  assert.equal(agentSettings.agentModel, "agent-model");
+  assert.equal(agentSettings.llmBaseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(agentSettings.llmModel, "agent-model");
+  assert.equal(agentSettings.llmApiKey, "agent-secret");
+  assert.equal("agentModel" in agentSettings, false);
   assert.equal(agentSettings.agentMaxTokens, 120_000);
   assert.equal(agentSettings.agentLookbackDays, 90);
   assert.equal(agentSettings.agentAllowPayloads, false);
   assert.deepEqual(agentSettings.agentProjectAllowlist, [projectPath]);
-  assert.equal(settingsForClient(agentSettings).agentApiKeyConfigured, true);
-  assert.throws(() => validateSettings({ agentEnabled: true }, current), /Agent.*模型名称/);
+  assert.equal(settingsForClient(agentSettings).llmApiKeyConfigured, true);
+  assert.throws(() => validateSettings({ agentEnabled: true }, current), /发现并选择模型/);
+});
+
+test("legacy Agent-only model settings migrate into the shared model service", async (context) => {
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "codex-legacy-model-settings-"));
+  context.after(() => rm(dataRoot, { recursive: true, force: true }));
+  await writeFile(path.join(dataRoot, "settings.json"), JSON.stringify({
+    ...defaultSettings(dataRoot),
+    llmEnabled: false,
+    llmBaseUrl: "https://review.example/v1",
+    llmModel: "review-model",
+    agentEnabled: true,
+    agentBaseUrl: "https://agent.example/v1",
+    agentModel: "agent-model",
+    agentApiKey: "agent-key",
+    agentTimeoutSeconds: 120,
+  }));
+  const migrated = await loadSettings(dataRoot);
+  assert.equal(migrated.llmBaseUrl, "https://agent.example/v1");
+  assert.equal(migrated.llmModel, "agent-model");
+  assert.equal(migrated.llmApiKey, "agent-key");
+  assert.equal(migrated.llmTimeoutSeconds, 120);
+  assert.equal("agentModel" in migrated, false);
 });
 
 test("scheduled run date persists across service restarts", async (context) => {

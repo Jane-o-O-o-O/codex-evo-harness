@@ -27,10 +27,6 @@ export function defaultSettings(dataRoot) {
     llmApiKey: "",
     llmTimeoutSeconds: 60,
     agentEnabled: false,
-    agentBaseUrl: "https://api.openai.com/v1",
-    agentModel: "",
-    agentApiKey: "",
-    agentTimeoutSeconds: 120,
     agentMaxRounds: 40,
     agentMaxTokens: 200_000,
     agentMaxInputBytes: 2_000_000,
@@ -46,6 +42,14 @@ export function defaultSettings(dataRoot) {
 
 export function validateSettings(input, current) {
   const next = { ...current };
+  const legacyAgentOnly = Boolean(input.agentModel) && (!input.llmModel || (input.agentEnabled && !input.llmEnabled));
+  const sharedInput = legacyAgentOnly ? {
+    ...input,
+    llmBaseUrl: input.agentBaseUrl ?? input.llmBaseUrl,
+    llmModel: input.agentModel,
+    llmApiKey: input.agentApiKey ?? input.llmApiKey,
+    llmTimeoutSeconds: input.agentTimeoutSeconds ?? input.llmTimeoutSeconds,
+  } : input;
   if (typeof input.enabled === "boolean") next.enabled = input.enabled;
   if (typeof input.scheduleTime === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(input.scheduleTime)) {
     next.scheduleTime = input.scheduleTime;
@@ -60,35 +64,23 @@ export function validateSettings(input, current) {
     }
   }
   if (typeof input.llmEnabled === "boolean") next.llmEnabled = input.llmEnabled;
-  if (input.llmBaseUrl !== undefined) next.llmBaseUrl = validateLlmBaseUrl(input.llmBaseUrl);
-  if (input.llmModel !== undefined) {
-    if (typeof input.llmModel !== "string" || input.llmModel.trim().length > 200) throw new Error("llmModel must be a string up to 200 characters");
-    next.llmModel = input.llmModel.trim();
+  if (sharedInput.llmBaseUrl !== undefined) next.llmBaseUrl = validateLlmBaseUrl(sharedInput.llmBaseUrl);
+  if (sharedInput.llmModel !== undefined) {
+    if (typeof sharedInput.llmModel !== "string" || sharedInput.llmModel.trim().length > 200) throw new Error("llmModel must be a string up to 200 characters");
+    next.llmModel = sharedInput.llmModel.trim();
   }
-  if (input.clearLlmApiKey === true) next.llmApiKey = "";
-  else if (input.llmApiKey !== undefined) {
-    if (typeof input.llmApiKey !== "string" || input.llmApiKey.trim().length > 4_096) throw new Error("llmApiKey must be a string up to 4096 characters");
-    next.llmApiKey = input.llmApiKey.trim();
+  if (sharedInput.clearLlmApiKey === true || sharedInput.clearAgentApiKey === true) next.llmApiKey = "";
+  else if (sharedInput.llmApiKey !== undefined) {
+    if (typeof sharedInput.llmApiKey !== "string" || sharedInput.llmApiKey.trim().length > 4_096) throw new Error("llmApiKey must be a string up to 4096 characters");
+    next.llmApiKey = sharedInput.llmApiKey.trim();
   }
-  if (input.llmTimeoutSeconds !== undefined) {
-    const value = Number(input.llmTimeoutSeconds);
-    if (!Number.isInteger(value) || value < 5 || value > 300) throw new Error("llmTimeoutSeconds must be an integer from 5 to 300");
+  if (sharedInput.llmTimeoutSeconds !== undefined) {
+    const value = Number(sharedInput.llmTimeoutSeconds);
+    if (!Number.isInteger(value) || value < 5 || value > 600) throw new Error("llmTimeoutSeconds must be an integer from 5 to 600");
     next.llmTimeoutSeconds = value;
   }
-  if (next.llmEnabled && !next.llmModel) throw new Error("启用 LLM 分析时必须填写模型名称");
   if (typeof input.agentEnabled === "boolean") next.agentEnabled = input.agentEnabled;
-  if (input.agentBaseUrl !== undefined) next.agentBaseUrl = validateLlmBaseUrl(input.agentBaseUrl);
-  if (input.agentModel !== undefined) {
-    if (typeof input.agentModel !== "string" || input.agentModel.trim().length > 200) throw new Error("agentModel must be a string up to 200 characters");
-    next.agentModel = input.agentModel.trim();
-  }
-  if (input.clearAgentApiKey === true) next.agentApiKey = "";
-  else if (input.agentApiKey !== undefined) {
-    if (typeof input.agentApiKey !== "string" || input.agentApiKey.trim().length > 4_096) throw new Error("agentApiKey must be a string up to 4096 characters");
-    next.agentApiKey = input.agentApiKey.trim();
-  }
   for (const [key, min, max] of [
-    ["agentTimeoutSeconds", 5, 600],
     ["agentMaxRounds", 1, 200],
     ["agentMaxTokens", 1_000, 10_000_000],
     ["agentMaxInputBytes", 16_384, 50_000_000],
@@ -109,13 +101,17 @@ export function validateSettings(input, current) {
     }))];
   }
   if (typeof input.agentAllowPayloads === "boolean") next.agentAllowPayloads = input.agentAllowPayloads;
-  if (next.agentEnabled && !next.agentModel) throw new Error("启用 Agent 时必须填写模型名称");
+  if ((next.llmEnabled || next.agentEnabled) && !next.llmModel) throw new Error("启用模型功能时必须先发现并选择模型");
+  delete next.agentBaseUrl;
+  delete next.agentModel;
+  delete next.agentApiKey;
+  delete next.agentTimeoutSeconds;
   return next;
 }
 
 export function settingsForClient(settings) {
-  const { llmApiKey, agentApiKey, ...visible } = settings;
-  return { ...visible, llmApiKeyConfigured: Boolean(llmApiKey), agentApiKeyConfigured: Boolean(agentApiKey) };
+  const { llmApiKey, agentApiKey: _agentApiKey, agentBaseUrl: _agentBaseUrl, agentModel: _agentModel, agentTimeoutSeconds: _agentTimeoutSeconds, ...visible } = settings;
+  return { ...visible, llmApiKeyConfigured: Boolean(llmApiKey) };
 }
 
 function validateLlmBaseUrl(value) {

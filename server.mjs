@@ -19,7 +19,7 @@ import {
   storeReview,
   validateSettings,
 } from "./insights.mjs";
-import { analyzeDailyReview, testLlmConnection } from "./llm-review.mjs";
+import { analyzeDailyReview, discoverModels, testLlmConnection } from "./llm-review.mjs";
 import { createAgentAnalysisRun, executeAgentRun, testAgentConnection } from "./agent-engine.mjs";
 import {
   agentDashboard,
@@ -789,6 +789,12 @@ export function createViewerServer(options) {
         const current = await settingsPromise;
         const draft = validateSettings({ ...await readBody(request), llmEnabled: true }, current);
         json(response, 200, await testLlmConnection(draft, { fetchImpl: options.fetchImpl }));
+        return;
+      }
+      if (url.pathname === "/api/settings/models" && request.method === "POST") {
+        const current = await settingsPromise;
+        const draft = validateSettings({ ...await readBody(request), llmEnabled: false, agentEnabled: false }, current);
+        json(response, 200, await discoverModels(draft, { fetchImpl: options.fetchImpl }));
         return;
       }
       if (url.pathname === "/api/settings/test-agent" && request.method === "POST") {

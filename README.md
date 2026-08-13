@@ -211,15 +211,17 @@ Agent 数据保存在独立目录，不修改原始 Trace：
 
 Plugin 的外部更新由 Codex CLI 的 `plugin remove/add` 完成，并用 `plugin list --available --json` 验证安装状态。当前 CLI 不能指定安装旧版本，因此 Plugin 回滚可以恢复配置和已安装状态，但不能承诺恢复更新前的二进制版本；UI 和审计记录会保留这一限制。AGENTS、Skill、Rules、Hooks、MCP 配置和 `config.toml` 等文件型对象仍使用精确快照回滚。
 
-## 可选的 LLM 智能分析
+## 共享模型服务
 
-默认情况下，日报完全使用本地规则统计，不调用外部模型。你可以在“设置 -> LLM 智能分析”中启用 OpenAI 兼容的 Chat Completions 接口：
+每日复盘与 Agent 共用一套 OpenAI 兼容模型配置。默认情况下，两项功能都可以关闭，不会调用外部模型。你可以在“设置 -> 模型服务”中配置：
 
 - API 基础地址，例如 `https://api.openai.com/v1`。
-- 模型名称，例如 `gpt-5-mini` 或本地兼容模型。
+- 点击“发现”从兼容的 `GET /models` 接口读取模型列表，再从下拉框中直接选择。
 - 可选 API Key；不需要授权的本地服务可以留空。
-- 5 到 300 秒的请求超时。
-- 保存前可以点击“测试连接”。
+- 5 到 600 秒的共享请求超时。
+- 保存前可以点击“测试所选模型”。
+
+“用于每日复盘”和“Agent 分析”仍是两个独立开关，但 API 地址、API Key、模型和超时不会重复配置。旧版本的独立 Agent 设置会在载入时迁移到共享模型服务。
 
 手动复盘和定时复盘使用同一条链路。LLM 超时、HTTP 错误或返回无效 JSON 时，规则日报仍然会保存，界面会明确显示“失败，已降级”。
 
@@ -273,8 +275,9 @@ node server.mjs `
 | `GET /api/reviews` | 获取历史日报 |
 | `POST /api/reviews/run` | 生成一次日报 |
 | `GET/PUT /api/settings` | 读取或保存设置 |
+| `POST /api/settings/models` | 从共享模型服务发现可选模型 |
 | `POST /api/settings/test-llm` | 测试 OpenAI 兼容接口 |
-| `POST /api/settings/test-agent` | 测试独立 Agent 模型接口 |
+| `POST /api/settings/test-agent` | 使用共享模型配置测试 Agent 工具调用接口 |
 | `GET /api/agent` | 获取 Agent 运行、Proposal、Change 和索引状态 |
 | `GET /api/agent/evidence` | 获取 Trace 聚合与 Harness 只读快照；携带 `bundleId` 与 locator 参数时回读具体证据 |
 | `POST /api/agent/runs` | 启动全量或增量 Agent 分析 |

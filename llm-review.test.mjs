@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { analyzeDailyReview, chatCompletionsUrl, testLlmConnection } from "./llm-review.mjs";
+import { analyzeDailyReview, chatCompletionsUrl, discoverModels, modelsUrl, testLlmConnection } from "./llm-review.mjs";
 
 const settings = {
   llmBaseUrl: "https://example.test/v1/",
@@ -13,6 +13,21 @@ const settings = {
 test("chat completions URL accepts a base URL or full endpoint", () => {
   assert.equal(chatCompletionsUrl("https://example.test/v1/"), "https://example.test/v1/chat/completions");
   assert.equal(chatCompletionsUrl("https://example.test/v1/chat/completions"), "https://example.test/v1/chat/completions");
+});
+
+test("model discovery resolves the Models endpoint and returns selectable model ids", async () => {
+  assert.equal(modelsUrl("https://example.test/v1/"), "https://example.test/v1/models");
+  assert.equal(modelsUrl("https://example.test/v1/chat/completions"), "https://example.test/v1/models");
+  let request;
+  const result = await discoverModels(settings, {
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({ data: [{ id: "gpt-5-mini" }, { id: "gpt-5" }, { id: "gpt-5" }] }), { status: 200 });
+    },
+  });
+  assert.equal(request.url, "https://example.test/v1/models");
+  assert.equal(request.options.headers.authorization, "Bearer secret-key");
+  assert.deepEqual(result.models, ["gpt-5", "gpt-5-mini"]);
 });
 
 test("LLM review uses the OpenAI-compatible chat completions protocol", async () => {

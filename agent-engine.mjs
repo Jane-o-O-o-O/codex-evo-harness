@@ -134,7 +134,7 @@ export async function executeAgentRun(context, runId) {
 export async function testAgentConnection(settings, { fetchImpl = globalThis.fetch } = {}) {
   const startedAt = Date.now();
   const response = await callAgentModel(settings, [{ role: "user", content: "只回复 OK" }], [], { fetchImpl });
-  return { ok: Boolean(response.message.content), model: settings.agentModel, latencyMs: Date.now() - startedAt };
+  return { ok: Boolean(response.message.content), model: sharedModelSetting(settings, "Model"), latencyMs: Date.now() - startedAt };
 }
 
 async function executeAnalysisTool(context, runId, name, args) {
@@ -195,8 +195,8 @@ async function executeAnalysisTool(context, runId, name, args) {
 async function callAgentModel(settings, messages, tools, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("当前 Node.js 环境不支持 fetch");
-  const url = chatCompletionsUrl(settings.agentBaseUrl);
-  const body = JSON.stringify({ model: settings.agentModel, messages, tools, tool_choice: tools.length ? "auto" : undefined, max_completion_tokens: options.maxOutputTokens ? Math.min(options.maxOutputTokens, 100_000) : undefined });
+  const url = chatCompletionsUrl(sharedModelSetting(settings, "BaseUrl"));
+  const body = JSON.stringify({ model: sharedModelSetting(settings, "Model"), messages, tools, tool_choice: tools.length ? "auto" : undefined, max_completion_tokens: options.maxOutputTokens ? Math.min(options.maxOutputTokens, 100_000) : undefined });
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort(options.signal?.reason);
   if (options.signal?.aborted) controller.abort(options.signal.reason);
@@ -205,10 +205,11 @@ async function callAgentModel(settings, messages, tools, options = {}) {
   const timeout = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, settings.agentTimeoutSeconds * 1_000);
+  }, sharedModelSetting(settings, "TimeoutSeconds") * 1_000);
   try {
     const headers = { "content-type": "application/json" };
-    if (settings.agentApiKey) headers.authorization = `Bearer ${settings.agentApiKey}`;
+    const apiKey = sharedModelSetting(settings, "ApiKey");
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     const response = await fetchImpl(url, { method: "POST", headers, body, signal: controller.signal });
     const text = await readBoundedResponse(response);
     if (!response.ok) throw new Error(`Agent API 返回 HTTP ${response.status}：${text.slice(0, 500)}`);
@@ -219,12 +220,16 @@ async function callAgentModel(settings, messages, tools, options = {}) {
     return { message: normalizedMessage, usage: normalizeModelUsage(payload.usage, messages, normalizedMessage) };
   } catch (error) {
     if (options.signal?.aborted) throw new Error("用户已停止分析");
-    if (timedOut) throw new Error(`Agent 请求超过 ${settings.agentTimeoutSeconds} 秒`);
+    if (timedOut) throw new Error(`Agent 请求超过 ${sharedModelSetting(settings, "TimeoutSeconds")} 秒`);
     throw error;
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+function sharedModelSetting(settings, suffix) {
+  return settings[`llm${suffix}`] ?? settings[`agent${suffix}`];
 }
 
 function agentSystemPrompt() {
