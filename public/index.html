@@ -17,6 +17,7 @@
       <nav class="mode-switch" aria-label="主导航">
         <button class="mode active" data-mode="traces">会话</button>
         <button class="mode" data-mode="reviews">每日复盘</button>
+        <button class="mode" data-mode="agent">Agent</button>
         <button class="mode" data-mode="settings">设置</button>
       </nav>
       <div id="global-status" class="global-status busy" aria-live="polite"><span class="status-dot"></span><span id="capture-status">检查采集状态…</span><small id="last-refresh">尚未刷新</small></div>
@@ -62,6 +63,24 @@
         <div id="review-content" class="review-content"></div>
       </section>
     </main>
+    <main id="agent-workspace" class="agent-workspace hidden">
+      <aside class="agent-runs pane">
+        <div class="agent-pane-header"><div><span class="eyebrow">HARNESS EVOLUTION</span><h1>Agent</h1></div><span id="agent-model-badge" class="status-badge neutral">未配置</span></div>
+        <div class="agent-run-actions"><button id="agent-run-full" class="primary-action" type="button">全量分析</button><button id="agent-run-incremental" type="button">增量分析</button></div>
+        <div id="agent-index-summary" class="agent-index-summary">正在读取 Agent 状态…</div>
+        <div class="pane-title">分析运行 <span id="agent-run-count">0</span></div>
+        <div id="agent-run-list" class="agent-run-list"></div>
+      </aside>
+      <section class="agent-center pane">
+        <div class="agent-center-header"><div><h2>改进建议</h2><p>Agent 只提出建议；每一项 Harness 变更都需要用户单独批准。</p></div><button id="agent-refresh" type="button" title="刷新 Agent 状态" aria-label="刷新 Agent 状态">↻</button></div>
+        <div class="agent-view-tabs" role="tablist" aria-label="Agent 视图"><button class="active" data-agent-tab="proposals">待审批 <span id="agent-pending-count">0</span></button><button data-agent-tab="changes">变更历史</button></div>
+        <div id="agent-proposal-list" class="agent-proposal-list"></div>
+        <div id="agent-change-list" class="agent-change-list hidden"></div>
+      </section>
+      <aside class="agent-detail pane">
+        <div id="agent-detail-content" class="agent-detail-content empty">选择一条建议查看证据、目标和变更内容</div>
+      </aside>
+    </main>
     <dialog id="settings-dialog">
       <form id="settings-form" method="dialog">
         <header class="settings-header">
@@ -73,6 +92,7 @@
             <button type="button" class="settings-nav-item active" data-settings-section="capture"><span class="settings-nav-icon">◉</span><span><strong>采集状态</strong><small>目录与 Codex CLI</small></span></button>
             <button type="button" class="settings-nav-item" data-settings-section="review"><span class="settings-nav-icon">◷</span><span><strong>每日复盘</strong><small>时间与自动任务</small></span></button>
             <button type="button" class="settings-nav-item" data-settings-section="llm"><span class="settings-nav-icon">✦</span><span><strong>LLM 分析</strong><small>OpenAI 兼容 API</small></span></button>
+            <button type="button" class="settings-nav-item" data-settings-section="agent"><span class="settings-nav-icon">A</span><span><strong>Agent</strong><small>Harness 分析与预算</small></span></button>
             <button type="button" class="settings-nav-item" data-settings-section="retention"><span class="settings-nav-icon">⌁</span><span><strong>数据管理</strong><small>未使用阈值与保留</small></span></button>
             <button type="button" class="settings-nav-item" data-settings-section="privacy"><span class="settings-nav-icon">▣</span><span><strong>隐私说明</strong><small>本地数据边界</small></span></button>
           </nav>
@@ -105,13 +125,22 @@
               </fieldset>
             </section>
 
+            <section id="settings-section-agent" class="settings-section" data-settings-panel="agent" tabindex="-1">
+              <div class="section-heading-large"><div><span class="section-kicker">04 / HARNESS AGENT</span><h3>Agent 分析</h3><p>使用独立模型读取全量 Trace 与 Harness，只生成待审批建议。</p></div><label class="settings-toggle"><input id="agent-enabled" name="agentEnabled" type="checkbox" /><span class="toggle-track" aria-hidden="true"></span><strong>启用</strong></label></div>
+              <fieldset id="agent-settings-fields" class="settings-fieldset">
+                <div class="settings-field-grid"><label class="field"><span class="field-copy"><strong>API 基础地址</strong><small>支持 OpenAI 兼容 Chat Completions endpoint。</small></span><input name="agentBaseUrl" type="url" placeholder="https://api.openai.com/v1" required /></label><label class="field"><span class="field-copy"><strong>模型名称</strong><small>用于 Trace 与 Harness 审计的独立模型。</small></span><input name="agentModel" type="text" placeholder="填写模型名称" autocomplete="off" required /></label><label class="field"><span class="field-copy"><strong>API Key</strong><small id="agent-key-state">尚未保存密钥；本地服务可留空。</small></span><input name="agentApiKey" type="password" placeholder="输入后保存，界面不会回显" autocomplete="new-password" /></label><label id="agent-clear-key-field" class="field checkbox-field hidden"><span class="field-copy"><strong>清除已保存密钥</strong><small>清除后 Agent 请求不再携带 API Key。</small></span><input name="clearAgentApiKey" type="checkbox" /></label><label class="field"><span class="field-copy"><strong>请求超时</strong><small>单次模型请求的连接与读取超时。</small></span><span class="input-suffix"><input name="agentTimeoutSeconds" type="number" min="5" max="600" /><em>秒</em></span></label><label class="field"><span class="field-copy"><strong>最大轮次</strong><small>简单工具循环允许的最大模型轮次。</small></span><input name="agentMaxRounds" type="number" min="1" max="200" /></label><label class="field"><span class="field-copy"><strong>Token 总预算</strong><small>本次 Agent 模型调用累计输入和输出上限。</small></span><input name="agentMaxTokens" type="number" min="1000" max="10000000" /></label><label class="field"><span class="field-copy"><strong>最长运行</strong><small>单次分析超过时间后停止。</small></span><span class="input-suffix"><input name="agentMaxDurationMinutes" type="number" min="1" max="1440" /><em>分钟</em></span></label><label class="field"><span class="field-copy"><strong>回看时间</strong><small>0 表示全部历史，否则只分析最近若干天。</small></span><span class="input-suffix"><input name="agentLookbackDays" type="number" min="0" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>项目白名单</strong><small>每行一个绝对路径；留空允许所有 Trace 项目。</small></span><textarea name="agentProjectAllowlist" rows="4" placeholder="E:\\projects\\my-app"></textarea></label><label class="field checkbox-field"><span class="field-copy"><strong>允许按需读取 Payload</strong><small>关闭后 Agent 的 trace.get_payload 工具会被后端拒绝。</small></span><input name="agentAllowPayloads" type="checkbox" /></label><label class="field"><span class="field-copy"><strong>Payload 上限</strong><small>按需回读单个 Payload 的最大体积。</small></span><span class="input-suffix"><input name="agentMaxPayloadBytes" type="number" min="1024" max="5000000" /><em>bytes</em></span></label><label class="field"><span class="field-copy"><strong>工具结果预算</strong><small>单次工具结果进入模型上下文的上限。</small></span><span class="input-suffix"><input name="agentMaxInputBytes" type="number" min="16384" max="50000000" /><em>bytes</em></span></label></div>
+                <div class="llm-test-row"><button id="test-agent" type="button">测试连接</button><span id="agent-test-status" role="status">Agent 不会在分析阶段获得写工具。</span></div>
+                <div class="llm-privacy-note"><strong>审批边界</strong><span>Agent 只能创建结构化 Proposal。用户批准后，后端仍会校验审批令牌、目标路径、operation hash 和文件 hash，再执行修改并创建可回滚快照。</span></div>
+              </fieldset>
+            </section>
+
             <section id="settings-section-retention" class="settings-section" data-settings-panel="retention" tabindex="-1">
-              <div class="section-heading-large"><div><span class="section-kicker">04 / DATA MANAGEMENT</span><h3>数据管理</h3><p>控制长期未使用建议的出现时间，以及日报的保留周期。</p></div></div>
+              <div class="section-heading-large"><div><span class="section-kicker">05 / DATA MANAGEMENT</span><h3>数据管理</h3><p>控制长期未使用建议的出现时间，以及日报的保留周期。</p></div></div>
               <div class="settings-field-grid"><label class="field"><span class="field-copy"><strong>工具未使用阈值</strong><small>超过该天数会出现在清理建议。</small></span><span class="input-suffix"><input name="inactiveToolDays" type="number" min="1" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>Skill 未使用阈值</strong><small>只影响日报建议，不会删除 Skill。</small></span><span class="input-suffix"><input name="inactiveSkillDays" type="number" min="1" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>MCP 未使用阈值</strong><small>只影响日报建议，不会修改配置。</small></span><span class="input-suffix"><input name="inactiveMcpDays" type="number" min="1" max="3650" /><em>天</em></span></label><label class="field"><span class="field-copy"><strong>日报保留天数</strong><small>超过期限的日报会被清理，trace 不受影响。</small></span><span class="input-suffix"><input name="retentionDays" type="number" min="1" max="3650" /><em>天</em></span></label></div>
             </section>
 
             <section id="settings-section-privacy" class="settings-section" data-settings-panel="privacy" tabindex="-1">
-              <div class="section-heading-large"><div><span class="section-kicker">05 / PRIVACY</span><h3>隐私与安全</h3><p>Trace 可能包含提示词、源码、路径、工具参数和命令输出。</p></div></div>
+              <div class="section-heading-large"><div><span class="section-kicker">06 / PRIVACY</span><h3>隐私与安全</h3><p>Trace 可能包含提示词、源码、路径、工具参数和命令输出。</p></div></div>
               <div class="privacy-list"><div><span class="privacy-icon">●</span><div><strong>默认本地</strong><p>viewer 只绑定 `127.0.0.1`，不会自动上传 Langfuse 或其他服务。</p></div></div><div><span class="privacy-icon">◆</span><div><strong>LLM 可控</strong><p>只有打开 LLM 分析并保存 API 配置后，聚合数据才会发送到你填写的接口。</p></div></div><div><span class="privacy-icon">▰</span><div><strong>清理需确认</strong><p>长期未使用项只是建议，工具不会自动删除 Skill、MCP 或 trace bundle。</p></div></div></div>
             </section>
           </div>

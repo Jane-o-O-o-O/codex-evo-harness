@@ -26,6 +26,7 @@ test("schedule runs once after the configured local time", () => {
 
 test("settings validation accepts schedule changes and rejects bad values", () => {
   const current = defaultSettings("data");
+  const projectPath = path.resolve("repo");
   assert.equal(validateSettings({ scheduleTime: "08:15", inactiveSkillDays: 45 }, current).scheduleTime, "08:15");
   const llmSettings = validateSettings({
     llmEnabled: true,
@@ -34,16 +35,35 @@ test("settings validation accepts schedule changes and rejects bad values", () =
     llmApiKey: "secret",
     llmTimeoutSeconds: 90,
   }, current);
-  const { llmApiKey: _llmApiKey, ...visibleLlmSettings } = llmSettings;
+  const { llmApiKey: _llmApiKey, agentApiKey: _agentApiKey, ...visibleLlmSettings } = llmSettings;
   assert.deepEqual(settingsForClient(llmSettings), {
     ...visibleLlmSettings,
     llmApiKeyConfigured: true,
+    agentApiKeyConfigured: false,
   });
   assert.equal(validateSettings({ clearLlmApiKey: true }, llmSettings).llmApiKey, "");
   assert.throws(() => validateSettings({ scheduleTime: "25:00" }, current), /HH:MM/);
   assert.throws(() => validateSettings({ inactiveMcpDays: 0 }, current), /inactiveMcpDays/);
   assert.throws(() => validateSettings({ llmBaseUrl: "file:///tmp/model" }, current), /http or https/);
   assert.throws(() => validateSettings({ llmEnabled: true }, current), /模型名称/);
+  const agentSettings = validateSettings({
+    agentEnabled: true,
+    agentBaseUrl: "http://127.0.0.1:11434/v1",
+    agentModel: "agent-model",
+    agentApiKey: "agent-secret",
+    agentMaxRounds: 25,
+    agentMaxTokens: 120_000,
+    agentLookbackDays: 90,
+    agentProjectAllowlist: [projectPath],
+    agentAllowPayloads: false,
+  }, current);
+  assert.equal(agentSettings.agentModel, "agent-model");
+  assert.equal(agentSettings.agentMaxTokens, 120_000);
+  assert.equal(agentSettings.agentLookbackDays, 90);
+  assert.equal(agentSettings.agentAllowPayloads, false);
+  assert.deepEqual(agentSettings.agentProjectAllowlist, [projectPath]);
+  assert.equal(settingsForClient(agentSettings).agentApiKeyConfigured, true);
+  assert.throws(() => validateSettings({ agentEnabled: true }, current), /Agent.*模型名称/);
 });
 
 test("scheduled run date persists across service restarts", async (context) => {

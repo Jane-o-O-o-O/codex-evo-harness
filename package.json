@@ -23,7 +23,7 @@
   "main": "desktop/main.mjs",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test server.test.mjs insights.test.mjs llm-review.test.mjs trace-detail.test.mjs",
+    "test": "node --test server.test.mjs insights.test.mjs llm-review.test.mjs trace-detail.test.mjs agent.test.mjs",
     "desktop": "electron .",
     "dist:win": "electron-builder --win nsis"
   },
@@ -37,6 +37,14 @@
       "server.mjs",
       "insights.mjs",
       "llm-review.mjs",
+      "agent-schema.mjs",
+      "agent-store.mjs",
+      "trace-query.mjs",
+      "harness-tools.mjs",
+      "harness-mutations.mjs",
+      "agent-engine.mjs",
+      "agent-service.mjs",
+      "codex-cli.mjs",
       "package.json",
       "ABOUT.md",
       "LICENSE"
@@ -48,7 +56,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -67,5 +77,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "smol-toml": "^1.8.0"
   }
 }

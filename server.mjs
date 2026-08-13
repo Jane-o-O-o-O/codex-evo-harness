@@ -20,6 +20,18 @@ import {
   validateSettings,
 } from "./insights.mjs";
 import { analyzeDailyReview, testLlmConnection } from "./llm-review.mjs";
+import { createAgentAnalysisRun, executeAgentRun, testAgentConnection } from "./agent-engine.mjs";
+import {
+  agentDashboard,
+  agentEvidenceDetail,
+  agentEvidenceSummary,
+  applyAgentProposal,
+  decideAgentProposal,
+  proposalDetail,
+  recoverInterruptedAgentState,
+  rollbackAgentChange,
+} from "./agent-service.mjs";
+import { getRun, updateRun } from "./agent-store.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(here, "public");
@@ -229,6 +241,7 @@ async function discoverBundles(traceRoot, reductionStates = null) {
       const rawComplete = Boolean(rawEventState?.rolloutEnded || rawEventState?.turnEnded);
       const needsReduction = Boolean(stateInfo && rawEventState && rawEventState.mtimeMs > stateInfo.mtimeMs && rawComplete);
       const reduced = Boolean(stateInfo) && !needsReduction;
+      if (reduced && reduction) reductionStates.delete(bundleDir);
       const complete = reduced || rawComplete;
       const reductionStatus = reduced ? "ready" : reduction?.status || "raw";
       const rolloutStatus = summary?.status || (stateInfo ? "corrupt" : rawEventState?.rolloutStatus || (rawEventState?.rolloutEnded ? "completed" : "running"));
@@ -385,23 +398,58 @@ function removeReducerIncompatibleMetadata(value) {
   return removed;
 }
 
-function removeReducerIncompatibleCustomToolItems(value) {
+function removeReducerIncompatibleImageFields(value) {
+  if (!value || typeof value !== "object") return 0;
+  let removed = 0;
+  if (!Array.isArray(value) && value.type === "input_image" && Object.hasOwn(value, "image_url")) {
+    delete value.image_url;
+    removed += 1;
+  }
+  if (!Array.isArray(value) && value.type === "input_image" && Object.hasOwn(value, "detail")) {
+    delete value.detail;
+    removed += 1;
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    removed += removeReducerIncompatibleImageFields(child);
+  }
+  return removed;
+}
+
+function removeReducerIncompatibleItemIds(value) {
+  if (!value || typeof value !== "object") return 0;
+  let removed = 0;
+  if (
+    !Array.isArray(value)
+    && typeof value.call_id === "string"
+    && ["function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"].includes(value.type)
+    && Object.hasOwn(value, "id")
+  ) {
+    delete value.id;
+    removed += 1;
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    removed += removeReducerIncompatibleItemIds(child);
+  }
+  return removed;
+}
+
+function removeReducerIncompatibleToolItems(value) {
   if (!value || typeof value !== "object") return 0;
   let removed = 0;
   if (Array.isArray(value)) {
     for (let index = value.length - 1; index >= 0; index -= 1) {
       const item = value[index];
-      if (item?.type === "custom_tool_call" || item?.type === "custom_tool_call_output") {
+      if (["function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"].includes(item?.type)) {
         value.splice(index, 1);
         removed += 1;
         continue;
       }
-      removed += removeReducerIncompatibleCustomToolItems(item);
+      removed += removeReducerIncompatibleToolItems(item);
     }
     return removed;
   }
   for (const child of Object.values(value)) {
-    removed += removeReducerIncompatibleCustomToolItems(child);
+    removed += removeReducerIncompatibleToolItems(child);
   }
   return removed;
 }
@@ -409,7 +457,9 @@ function removeReducerIncompatibleCustomToolItems(value) {
 export async function rewritePayloadForCompatibility(source, destination = source, { dropCustomToolItems = false } = {}) {
   const payload = JSON.parse(await readFile(source, "utf8"));
   let changed = removeReducerIncompatibleMetadata(payload);
-  if (dropCustomToolItems) changed += removeReducerIncompatibleCustomToolItems(payload);
+  changed += removeReducerIncompatibleImageFields(payload);
+  changed += removeReducerIncompatibleItemIds(payload);
+  if (dropCustomToolItems) changed += removeReducerIncompatibleToolItems(payload);
   if (changed) await writeFile(destination, JSON.stringify(payload), "utf8");
   else if (destination !== source) await copyFile(source, destination);
   return changed;
@@ -423,8 +473,9 @@ export async function rewriteTraceLogForCompatibility(source, destination = sour
     try {
       const event = JSON.parse(line);
       const payload = event?.payload;
-      if (payload?.type !== "code_cell_started" || typeof payload.model_visible_call_id !== "string") return line;
-      const suffix = String(payload.runtime_cell_id || index + 1).replace(/[^a-zA-Z0-9_-]/g, "_");
+      if (!payload || typeof payload.model_visible_call_id !== "string") return line;
+      if (!["code_cell_started", "tool_call_started"].includes(payload.type)) return line;
+      const suffix = String(payload.runtime_cell_id || payload.tool_call_id || index + 1).replace(/[^a-zA-Z0-9_-]/g, "_");
       payload.model_visible_call_id = `call_viewer_${event.seq || index + 1}_${suffix}`;
       changed += 1;
       return JSON.stringify(event);
@@ -457,8 +508,6 @@ export async function runReducerWithCompatibility(codex, bundleDir) {
     for (const entry of payloadEntries) {
       if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") continue;
       const payloadPath = path.join(payloadsDir, entry.name);
-      const source = await readFile(payloadPath, "utf8");
-      if (!source.includes("internal_chat_message_metadata_passthrough")) continue;
       await rewritePayloadForCompatibility(payloadPath);
     }
     await rm(path.join(temporaryBundle, "state.json"), { force: true });
@@ -525,6 +574,30 @@ export function createViewerServer(options) {
   const reductionStates = new Map();
   let settingsPromise = loadSettings(options.dataRoot);
   let reviewRunChain = Promise.resolve();
+  const activeAgentRuns = new Map();
+
+  function agentContext(settings) {
+    return {
+      traceRoot: options.traceRoot,
+      dataRoot: options.dataRoot,
+      codexHome: options.codexHome,
+      codex: options.codex,
+      projects: [],
+      settings,
+      fetchImpl: options.fetchImpl,
+    };
+  }
+
+  function launchAgentRun(run, settings) {
+    const active = activeAgentRuns.get(run.id);
+    if (active) return active.promise;
+    const controller = new AbortController();
+    const pending = executeAgentRun({ ...agentContext(settings), signal: controller.signal }, run.id)
+      .catch((error) => console.error(`Agent run ${run.id} failed: ${reductionError(error)}`))
+      .finally(() => activeAgentRuns.delete(run.id));
+    activeAgentRuns.set(run.id, { promise: pending, controller });
+    return pending;
+  }
 
   function reductionError(error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -588,6 +661,28 @@ export function createViewerServer(options) {
     }
   }
 
+  function bundleDates(bundles) {
+    return [...new Set(bundles.map((bundle) => localDate(bundle.startedAtUnixMs)))].sort((left, right) => right.localeCompare(left));
+  }
+
+  async function relevantReviews(bundles = null) {
+    const discovered = bundles || await discoverBundles(options.traceRoot, reductionStates);
+    const dates = new Set(bundleDates(discovered));
+    return (await listReviews(options.dataRoot)).filter((review) => dates.has(review.date));
+  }
+
+  function reviewNeedsRefresh(date, dayBundles, review) {
+    const readyBundles = dayBundles.filter((bundle) => bundle.reducedAtUnixMs && !bundle.needsReduction);
+    if (!review) return dayBundles.length > 0;
+    if (date === localDate()) return true;
+    if ((review.summary?.sessions || 0) < readyBundles.length) return true;
+    if (review.collection && (
+      review.collection.totalBundles !== dayBundles.length
+      || review.collection.includedBundles < readyBundles.length
+    )) return true;
+    return readyBundles.some((bundle) => bundle.reducedAtUnixMs > (review.generatedAtUnixMs || 0));
+  }
+
   async function runDailyReviewNow(date = localDate(), { markScheduled = false, includeLlm = true } = {}) {
     await queueCompletedRawBundles();
     const bundles = await discoverBundles(options.traceRoot, reductionStates);
@@ -609,6 +704,7 @@ export function createViewerServer(options) {
       listReviews(options.dataRoot),
     ]);
     const previousReviews = storedReviews.filter((review) => review.date !== date);
+    const existingReview = storedReviews.find((review) => review.date === date);
     const settings = await settingsPromise;
     const report = await buildDailyReview({ date, traces, inventory, previousReviews, bundleRoot: options.traceRoot, settings });
     report.collection = {
@@ -619,6 +715,12 @@ export function createViewerServer(options) {
       refreshIntervalMinutes: Math.max(1, Math.round(options.reviewRefreshMs / 60_000)),
       reductionErrors: reductionErrors.slice(0, 10),
     };
+    if (
+      existingReview?.summary?.sessions > report.summary.sessions
+      && (report.collection.failedBundles > 0 || report.collection.activeBundles > 0)
+    ) {
+      return existingReview;
+    }
     if (settings.llmEnabled && includeLlm) {
       if (report.summary.sessions === 0) {
         report.llmAnalysis = { status: "skipped", model: settings.llmModel, reason: "当天没有可分析的会话" };
@@ -689,12 +791,89 @@ export function createViewerServer(options) {
         json(response, 200, await testLlmConnection(draft, { fetchImpl: options.fetchImpl }));
         return;
       }
+      if (url.pathname === "/api/settings/test-agent" && request.method === "POST") {
+        const current = await settingsPromise;
+        const draft = validateSettings({ ...await readBody(request), agentEnabled: true }, current);
+        json(response, 200, await testAgentConnection(draft, { fetchImpl: options.fetchImpl }));
+        return;
+      }
+      if (url.pathname === "/api/agent") {
+        const settings = await settingsPromise;
+        json(response, 200, await agentDashboard(agentContext(settings)));
+        return;
+      }
+      if (url.pathname === "/api/agent/evidence") {
+        const settings = await settingsPromise;
+        if (url.searchParams.get("bundleId")) {
+          json(response, 200, await agentEvidenceDetail(agentContext(settings), Object.fromEntries(url.searchParams.entries())));
+        } else {
+          json(response, 200, await agentEvidenceSummary(agentContext(settings)));
+        }
+        return;
+      }
+      if (url.pathname === "/api/agent/runs" && request.method === "POST") {
+        const settings = await settingsPromise;
+        const input = await readBody(request);
+        const run = await createAgentAnalysisRun(agentContext(settings), input);
+        launchAgentRun(run, settings);
+        json(response, 202, run);
+        return;
+      }
+      const agentRunMatch = url.pathname.match(/^\/api\/agent\/runs\/([^/]+)$/);
+      if (agentRunMatch) {
+        const id = decodeURIComponent(agentRunMatch[1]);
+        if (request.method === "DELETE") {
+          const run = await getRun(options.dataRoot, id);
+          if (!["idle", "analyzing"].includes(run.state)) throw new Error(`Agent run cannot be stopped from ${run.state}`);
+          activeAgentRuns.get(id)?.controller.abort(new Error("用户已停止分析"));
+          json(response, 200, await updateRun(options.dataRoot, id, { state: "failed", error: "用户已停止分析", progress: { phase: "failed", completed: 0, total: null, message: "用户已停止分析" } }));
+        } else {
+          json(response, 200, await getRun(options.dataRoot, id));
+        }
+        return;
+      }
+      const agentResumeMatch = url.pathname.match(/^\/api\/agent\/runs\/([^/]+)\/resume$/);
+      if (agentResumeMatch && request.method === "POST") {
+        const source = await getRun(options.dataRoot, decodeURIComponent(agentResumeMatch[1]));
+        if (source.state !== "failed") throw new Error("only failed Agent runs can be resumed");
+        const settings = await settingsPromise;
+        const run = await createAgentAnalysisRun(agentContext(settings), { mode: source.mode, cursor: source.baseCursor, resumedFromRunId: source.id, scope: source.scope });
+        launchAgentRun(run, settings);
+        json(response, 202, run);
+        return;
+      }
+      const proposalDecisionMatch = url.pathname.match(/^\/api\/agent\/proposals\/([^/]+)\/decision$/);
+      if (proposalDecisionMatch && request.method === "POST") {
+        const settings = await settingsPromise;
+        json(response, 200, await decideAgentProposal(agentContext(settings), decodeURIComponent(proposalDecisionMatch[1]), await readBody(request)));
+        return;
+      }
+      const proposalApplyMatch = url.pathname.match(/^\/api\/agent\/proposals\/([^/]+)\/apply$/);
+      if (proposalApplyMatch && request.method === "POST") {
+        const settings = await settingsPromise;
+        const body = await readBody(request);
+        json(response, 200, await applyAgentProposal(agentContext(settings), decodeURIComponent(proposalApplyMatch[1]), body.token));
+        return;
+      }
+      const proposalMatch = url.pathname.match(/^\/api\/agent\/proposals\/([^/]+)$/);
+      if (proposalMatch) {
+        const settings = await settingsPromise;
+        json(response, 200, await proposalDetail(agentContext(settings), decodeURIComponent(proposalMatch[1])));
+        return;
+      }
+      const rollbackMatch = url.pathname.match(/^\/api\/agent\/changes\/([^/]+)\/rollback$/);
+      if (rollbackMatch && request.method === "POST") {
+        const settings = await settingsPromise;
+        const body = await readBody(request);
+        json(response, 200, await rollbackAgentChange(agentContext(settings), decodeURIComponent(rollbackMatch[1]), body.confirm === true));
+        return;
+      }
       if (url.pathname === "/api/inventory") {
         json(response, 200, await collectInventory(options.codexHome));
         return;
       }
       if (url.pathname === "/api/reviews") {
-        json(response, 200, { reviews: await listReviews(options.dataRoot) });
+        json(response, 200, { reviews: await relevantReviews() });
         return;
       }
       if (url.pathname === "/api/reviews/run" && request.method === "POST") {
@@ -703,7 +882,7 @@ export function createViewerServer(options) {
       }
       const reviewMatch = url.pathname.match(/^\/api\/reviews\/(\d{4}-\d{2}-\d{2})$/);
       if (reviewMatch) {
-        const reviews = await listReviews(options.dataRoot);
+        const reviews = await relevantReviews();
         const review = reviews.find((item) => item.date === reviewMatch[1]);
         json(response, review ? 200 : 404, review || { error: "review not found" });
         return;
@@ -805,7 +984,16 @@ export function createViewerServer(options) {
   const refreshReview = async () => {
     try {
       const settings = await settingsPromise;
-      if (settings.enabled) await runDailyReview(localDate(), { includeLlm: false });
+      if (!settings.enabled) return;
+      await queueCompletedRawBundles();
+      const bundles = await discoverBundles(options.traceRoot, reductionStates);
+      const reviews = await relevantReviews(bundles);
+      const reviewsByDate = new Map(reviews.map((review) => [review.date, review]));
+      for (const date of bundleDates(bundles)) {
+        const dayBundles = bundles.filter((bundle) => localDate(bundle.startedAtUnixMs) === date);
+        if (!reviewNeedsRefresh(date, dayBundles, reviewsByDate.get(date))) continue;
+        await runDailyReview(date, { includeLlm: false });
+      }
     } catch (error) {
       console.error(`automatic review refresh failed: ${error instanceof Error ? error.message : error}`);
     }
@@ -821,6 +1009,7 @@ export function createViewerServer(options) {
     clearTimeout(initialReviewTimer);
   });
   void queueCompletedRawBundles().catch((error) => console.error(`trace reduction queue failed: ${reductionError(error)}`));
+  void settingsPromise.then((settings) => recoverInterruptedAgentState(agentContext(settings))).catch((error) => console.error(`Agent store recovery failed: ${reductionError(error)}`));
   return server;
 }
 

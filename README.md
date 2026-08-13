@@ -22,6 +22,7 @@ Codex 很强，但原始运行过程通常分散在终端输出、会话文件�
 - **像 Langfuse 一样理解调用链**：树、瀑布时间线、从上到下的关系图和对话视图互相配合。
 - **像调试器一样定位问题**：慢节点、失败节点、模型调用、工具调用、Token 和原始 Payload 都能追溯。
 - **像个人分析师一样复盘**：每日统计使用习惯、常用场景、工具组合、Skill/MCP 活跃度和长期未使用项。
+- **让 Harness 可控进化**：Agent 检索全量或增量 Trace，结合当前 Codex 配置提出建议；只有用户逐项批准的具体操作才能执行。
 - **默认 local-first**：不需要注册账号，不需要部署服务，原始 trace 不会自动离开本机。
 
 ## 适合谁
@@ -169,6 +170,47 @@ CLI 是最直接、最稳定的使用方式。只要启动 CLI 的进程继承�
 
 清理项只是建议，系统不会自动删除 Skill、MCP、日报或 trace bundle。
 
+### Agent
+
+Agent 页面与每日复盘完全独立。每日复盘是给用户阅读的统计报告，不会作为 Harness 修改输入；Agent 则按需查询原始 Trace 索引和当前 Harness，寻找能够让 Codex 更符合个人使用习惯的改进。
+
+Agent 的固定流程是：
+
+```text
+Analyze -> Propose -> Await Approval -> Apply -> Verify
+```
+
+- 支持全量分析和基于 Cursor 的增量分析，不会一次把所有 Trace 塞进模型上下文。
+- 增量运行分别保存输入 `baseCursor` 和成功完成后的 `analysisCursor`。失败或停止不会推进 Dashboard 的增量基线，恢复时仍从原始 Cursor 重跑。
+- 可限制回看天数、项目白名单和 Payload 读取权限，并为每次运行设置轮次、累计 Token、时长、工具结果和 Payload 预算；实际模型 usage 会写入 Run。
+- 分析阶段只有 Trace/Harness 只读工具和 `proposal_create`，没有 shell、任意文件写入或 Harness 写工具。
+- 每条 Proposal 必须携带可回读的 Trace evidence locator，并绑定目标对象、operation hash 和目标 hash。
+- Agent 页面可以点击 evidence locator 回读经过裁剪和脱敏的会话窗口、Turn、工具调用或 Payload，而不会把整份 Trace 复制进 Proposal。
+- 批准、拒绝、暂缓和编辑后批准均逐项保存。批准令牌一次性使用、会过期，并且只能执行批准时的 exact operation。
+- 应用前创建快照；写入后验证发现失败会自动恢复；已完成的 Change 可以由用户一键回滚。
+- AGENTS、Skills、MCP、`config.toml`、Rules、Hooks 和 Plugins 通过各自的受控适配器修改，不开放任意路径写入。TOML 使用正式解析器校验，写入时保留原文件布局。
+
+Agent 数据保存在独立目录，不修改原始 Trace：
+
+```text
+.codex-insights/
+├─ agent/
+│  ├─ runs/
+│  ├─ proposals/
+│  ├─ approvals/
+│  ├─ changes/
+│  ├─ snapshots/
+│  ├─ analysis-index/
+│  ├─ trash/
+│  └─ metadata.json
+├─ reports/
+└─ settings.json
+```
+
+当前 Agent store schema 为 v2，并带有 v0 -> v1 -> v2 迁移。所有 Agent JSON 使用同目录临时文件加原子重命名写入。服务重启后，分析、Proposal、审批和 Change 状态都会保留；中断的本地文件变更会按快照恢复，外部 Codex CLI 操作无法可靠判定完成状态时会停止并要求人工核验。
+
+Plugin 的外部更新由 Codex CLI 的 `plugin remove/add` 完成，并用 `plugin list --available --json` 验证安装状态。当前 CLI 不能指定安装旧版本，因此 Plugin 回滚可以恢复配置和已安装状态，但不能承诺恢复更新前的二进制版本；UI 和审计记录会保留这一限制。AGENTS、Skill、Rules、Hooks、MCP 配置和 `config.toml` 等文件型对象仍使用精确快照回滚。
+
 ## 可选的 LLM 智能分析
 
 默认情况下，日报完全使用本地规则统计，不调用外部模型。你可以在“设置 -> LLM 智能分析”中启用 OpenAI 兼容的 Chat Completions 接口：
@@ -232,16 +274,28 @@ node server.mjs `
 | `POST /api/reviews/run` | 生成一次日报 |
 | `GET/PUT /api/settings` | 读取或保存设置 |
 | `POST /api/settings/test-llm` | 测试 OpenAI 兼容接口 |
+| `POST /api/settings/test-agent` | 测试独立 Agent 模型接口 |
+| `GET /api/agent` | 获取 Agent 运行、Proposal、Change 和索引状态 |
+| `GET /api/agent/evidence` | 获取 Trace 聚合与 Harness 只读快照；携带 `bundleId` 与 locator 参数时回读具体证据 |
+| `POST /api/agent/runs` | 启动全量或增量 Agent 分析 |
+| `GET/DELETE /api/agent/runs/:id` | 读取或停止一次 Agent 分析 |
+| `POST /api/agent/runs/:id/resume` | 从失败运行的原 Cursor 创建恢复运行 |
+| `GET /api/agent/proposals/:id` | 读取 Proposal 与来源运行 |
+| `POST /api/agent/proposals/:id/decision` | 批准、拒绝、暂缓或编辑后批准 |
+| `POST /api/agent/proposals/:id/apply` | 使用一次性审批令牌应用 exact operation |
+| `POST /api/agent/changes/:id/rollback` | 显式确认后回滚一个 Change |
 
 ## 技术架构
 
-项目分成五层：
+项目分成七层：
 
 1. **Codex runtime**：在本地写入有序 raw event 和 Payload 引用。
 2. **Reducer**：调用 `codex debug trace-reduce <bundle-directory>`，将 raw bundle 还原成语义化 Trace graph。
 3. **Node.js viewer service**：发现 bundle、读取 state、提供本地 API、执行每日复盘和定时任务。
 4. **Electron main process**：创建原生窗口、启动/关闭 viewer service、处理单实例和本地 URL。
 5. **Renderer UI**：纯 HTML/CSS/JavaScript，在 Electron `BrowserWindow` 中展示 Trace 工作台，不需要 React、Webpack 或前端构建链。
+6. **Agent query and loop**：增量 Trace 索引、Harness 只读发现和 OpenAI-compatible 工具循环，只负责形成 evidence-backed Proposal。
+7. **Approval and mutation**：后端审批校验、受控 Harness 适配器、快照、验证、审计和回滚。
 
 原始数据和归约数据的区别很重要：Raw bundle 是证据，`state.json` 是可浏览的语义图。Ready session 会直接读取 `state.json`，不会重复归约；Raw session 只有在用户明确请求时才会归约。
 
@@ -251,6 +305,13 @@ node server.mjs `
 server.mjs                本地 HTTP API、bundle 发现、归约和调度器
 insights.mjs              每日复盘聚合、设置、日报持久化
 llm-review.mjs            OpenAI 兼容 LLM 分析链路
+agent-schema.mjs          Agent 状态机与持久化数据 schema
+agent-store.mjs           原子 JSON 存储、审批令牌和分析 Cursor
+trace-query.mjs           Trace 轻量索引、检索、反馈与 Payload 回读
+harness-tools.mjs         Harness 发现、读取、hash 和敏感字段遮蔽
+harness-mutations.mjs     受控 Harness 修改、验证、快照和回滚
+agent-engine.mjs          只读工具循环、预算和 Proposal 创建
+agent-service.mjs         审批、应用、恢复和回滚事务编排
 desktop/main.mjs          Electron 主进程和原生窗口生命周期
 desktop/wizard.html/js    首次启动向导、Codex 检测和目录选择
 public/index.html         工作台页面结构
@@ -297,6 +358,9 @@ Trace 可能包含提示词、模型响应、工具参数、命令输出、本�
 - 默认只绑定 `127.0.0.1`，不要直接暴露到不可信网络。
 - 不要把真实 API Key、业务密钥或敏感 Payload 提交到 Git。
 - 启用 LLM 分析前，先确认所填服务的存储和日志策略。
+- Agent 模型会按工具查询读取经过范围限制与脱敏的数据；全量分析并不等于一次发送全部原始 Trace。
+- API Key、token、password、authorization 等敏感配置字段在 Harness 读取结果中会被遮蔽。
+- Harness 写入只能由用户批准的目标和 operation 触发；审批不能扩大到其他文件、MCP 或 Plugin。
 - 本项目不会自动上传 Langfuse，也不依赖 Langfuse、Docker 或数据库。
 - 清理建议不会自动执行删除操作。
 

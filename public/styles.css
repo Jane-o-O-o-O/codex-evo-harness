@@ -323,6 +323,64 @@ pre { max-height: 460px; margin: 0; padding: 12px; overflow: auto; border: 1px s
 .llm-analysis-state.failed { border-left-color: #fb7185; background: #21171a; }
 .llm-analysis-state.failed strong { color: #fda4af; }
 .review-empty { padding: 14px; border: 1px dashed #3c3c42; color: #777780; font-size: 11px; }
+
+.agent-workspace { height: calc(100vh - 58px); display: grid; grid-template-columns: 260px minmax(360px, 1fr) minmax(330px, .85fr); gap: 1px; background: #28282b; }
+.agent-runs, .agent-center, .agent-detail { min-width: 0; overflow: auto; background: #111113; }
+.agent-pane-header { display: flex; min-height: 84px; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 17px 16px 14px; border-bottom: 1px solid #28282b; }
+.agent-pane-header h1, .agent-center-header h2 { margin: 5px 0 0; color: #e4e4e7; font-size: 19px; letter-spacing: 0; }
+.agent-run-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 12px; border-bottom: 1px solid #28282b; }
+.agent-run-actions button { min-height: 33px; padding: 0 10px; border: 1px solid #414148; border-radius: 5px; color: #c7c7cd; background: #202024; font-size: 10px; }
+.agent-run-actions .primary-action { border-color: #7e22ce; color: #fff; background: #6d28a8; }
+.agent-run-actions button:disabled { opacity: .5; cursor: wait; }
+.agent-index-summary { padding: 10px 13px; border-bottom: 1px solid #28282b; color: #85858e; font-size: 10px; line-height: 1.55; }
+.agent-run-list { padding: 6px; }
+.agent-run-row { width: 100%; margin: 2px 0; padding: 10px 9px; border: 1px solid transparent; border-radius: 5px; color: #aaaab2; text-align: left; background: transparent; }
+.agent-run-row:hover, .agent-run-row.active { border-color: #3c3449; background: #211c27; }
+.agent-run-row > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-run-row strong { color: #d5d5da; font-size: 10px; }
+.agent-run-row small { display: block; margin-top: 6px; overflow: hidden; color: #707079; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.agent-state { padding: 2px 5px; border: 1px solid #414148; border-radius: 3px; color: #9999a2; font-size: 8px; }
+.agent-state.analyzing, .agent-state.applying, .agent-state.verifying { border-color: #7c5f2d; color: #f2c66d; }
+.agent-state.awaiting_approval { border-color: #69409a; color: #cfadfa; }
+.agent-state.completed { border-color: #315d45; color: #78d5a1; }
+.agent-state.failed { border-color: #6b343c; color: #f08b98; }
+.agent-center-header { display: flex; min-height: 84px; align-items: flex-start; justify-content: space-between; gap: 15px; padding: 17px 20px 14px; border-bottom: 1px solid #28282b; }
+.agent-center-header h2 { margin-top: 0; }
+.agent-center-header p { margin: 6px 0 0; color: #777780; font-size: 10px; line-height: 1.5; }
+.agent-center-header button { display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid #3c3c42; border-radius: 5px; color: #aaaab2; background: #202024; }
+.agent-view-tabs { display: flex; height: 39px; align-items: end; gap: 18px; padding: 0 20px; border-bottom: 1px solid #28282b; }
+.agent-view-tabs button { height: 39px; padding: 0; border: 0; border-bottom: 2px solid transparent; color: #777780; background: transparent; font-size: 10px; font-weight: 700; }
+.agent-view-tabs button.active { border-bottom-color: #a855f7; color: #e4e4e7; }
+.agent-proposal-list, .agent-change-list { padding: 10px 12px 35px; }
+.agent-proposal-card, .agent-change-card { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin: 0 0 7px; padding: 12px 13px; border: 1px solid #303036; border-radius: 6px; color: #b7b7be; text-align: left; background: #19191c; }
+.agent-proposal-card:hover, .agent-proposal-card.active, .agent-change-card:hover, .agent-change-card.active { border-color: #58406f; background: #201b26; }
+.agent-proposal-card h3, .agent-change-card h3 { margin: 0; overflow-wrap: anywhere; color: #dddde1; font-size: 11px; letter-spacing: 0; }
+.agent-proposal-card p, .agent-change-card p { margin: 6px 0 0; color: #7f7f88; font-size: 9px; line-height: 1.5; }
+.agent-card-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.risk-badge, .proposal-status { padding: 2px 5px; border: 1px solid #424249; border-radius: 3px; color: #9d9da6; font-size: 8px; white-space: nowrap; }
+.risk-badge.high { border-color: #713943; color: #f08b98; }
+.risk-badge.low { border-color: #315d45; color: #78d5a1; }
+.agent-detail-content { padding: 17px 18px 40px; }
+.agent-detail-content.empty { color: #6f6f78; font-size: 11px; }
+.agent-detail-title { padding-bottom: 13px; border-bottom: 1px solid #2d2d32; }
+.agent-detail-title h2 { margin: 0; overflow-wrap: anywhere; color: #e0e0e4; font-size: 16px; letter-spacing: 0; }
+.agent-detail-title p { margin: 8px 0 0; color: #85858e; font-size: 10px; line-height: 1.55; }
+.agent-detail-section { margin-top: 20px; }
+.agent-detail-section h3 { margin: 0 0 8px; color: #bdbdc4; font-size: 10px; text-transform: uppercase; }
+.agent-target { display: grid; gap: 5px; padding: 10px; border-left: 2px solid #6d4c91; color: #aaaab2; background: #1d1922; font-size: 9px; }
+.agent-target code { overflow-wrap: anywhere; color: #d4c4e8; font: 9px Consolas, monospace; }
+.agent-operation { max-height: 300px; overflow: auto; margin: 0; padding: 11px; border: 1px solid #303036; background: #151517; color: #bcbcc3; font: 9px/1.55 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-evidence { display: grid; gap: 7px; }
+.agent-evidence-item { width: 100%; padding: 9px 10px; border: 1px solid #303036; background: #19191c; text-align: left; }
+.agent-evidence-item:hover { border-color: #665077; background: #1d1a21; }
+.agent-evidence-item span { color: #86719e; font-size: 8px; }
+.agent-evidence-item p { margin: 6px 0 0; color: #a9a9b1; font-size: 9px; line-height: 1.55; }
+.agent-decision-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 18px; }
+.agent-decision-actions button, .agent-apply-action, .agent-rollback-action, .agent-resume-action { min-height: 32px; padding: 0 8px; border: 1px solid #424248; border-radius: 4px; color: #c3c3c9; background: #222226; font-size: 9px; }
+.agent-decision-actions .approve, .agent-apply-action { border-color: #356748; color: #b4e7c7; background: #1b3023; }
+.agent-decision-actions .reject, .agent-rollback-action { border-color: #6b343c; color: #f0a0aa; background: #301b1e; }
+.agent-edit-operation { width: 100%; min-height: 180px; margin-top: 9px; padding: 10px; border: 1px solid #3a3a40; border-radius: 4px; color: #d0d0d5; background: #151517; font: 9px/1.55 Consolas, monospace; resize: vertical; }
+.agent-empty { padding: 22px 12px; color: #6f6f78; font-size: 10px; text-align: center; }
 .collection-health { display: grid; gap: 5px; margin-bottom: 18px; padding: 12px 14px; border-left: 3px solid #22c55e; color: #9b9ba3; background: #151a18; font-size: 11px; line-height: 1.5; }
 .collection-health strong { color: #d4d4d8; }
 .collection-health.warn { border-left-color: #eab308; background: #211d13; }
@@ -418,6 +476,8 @@ dialog::backdrop { background: #000a; }
   .session-main strong { font-size: 12px; }
   .session-main small { font-size: 9px; }
   .reviews-workspace { display: block; height: calc(100vh - 58px); overflow: auto; }
+  .agent-workspace { height: auto; min-height: calc(100vh - 58px); grid-template-columns: 210px minmax(0, 1fr); }
+  .agent-detail { grid-column: 1 / -1; max-height: none; border-top: 1px solid #28282b; }
   .review-days { max-height: 170px; border-bottom: 1px solid #28282b; }
   .review-days .sessions-list { max-height: 125px; }
   .review-dashboard { overflow: visible; }
@@ -448,6 +508,14 @@ dialog::backdrop { background: #000a; }
   .browser-total { padding-top: 18px; }
   .filter-summary { min-height: 31px; }
   .toast-region { right: 12px; bottom: 12px; }
+}
+
+@media (max-width: 650px) {
+  .agent-workspace { display: block; height: auto; background: #111113; }
+  .agent-runs, .agent-center, .agent-detail { max-height: none; overflow: visible; }
+  .agent-runs { border-bottom: 1px solid #28282b; }
+  .agent-run-list { max-height: 180px; overflow: auto; }
+  .agent-decision-actions { grid-template-columns: 1fr; }
 }
 
 /* Trace workspace: dense, connected navigation inspired by Langfuse. */
@@ -603,8 +671,10 @@ dialog::backdrop { background: #000a; }
 .field-copy { display: grid; min-width: 0; gap: 4px; }
 .field-copy strong { color: #c9c9ce; font-size: 11px; font-weight: 600; }
 .field-copy small { color: #74747d; font-size: 9px; line-height: 1.4; }
-.field input:not([type="checkbox"]) { width: 100%; min-width: 0; height: 32px; padding: 0 9px; border: 1px solid #3c3c43; border-radius: 4px; outline: none; color: #dfdfe3; background: #101012; font-size: 11px; }
-.field input:not([type="checkbox"]):focus { border-color: #a78bfa; box-shadow: 0 0 0 2px #a78bfa22; }
+.field input:not([type="checkbox"]), .field textarea { width: 100%; min-width: 0; padding: 0 9px; border: 1px solid #3c3c43; border-radius: 4px; outline: none; color: #dfdfe3; background: #101012; font-size: 11px; }
+.field input:not([type="checkbox"]) { height: 32px; }
+.field textarea { min-height: 76px; padding-top: 8px; padding-bottom: 8px; line-height: 1.45; resize: vertical; }
+.field input:not([type="checkbox"]):focus, .field textarea:focus { border-color: #a78bfa; box-shadow: 0 0 0 2px #a78bfa22; }
 .field input[type="checkbox"] { width: 16px; height: 16px; justify-self: end; accent-color: #8b5cf6; }
 .input-suffix { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .input-suffix input { flex: 1; min-width: 0; }
@@ -666,7 +736,7 @@ dialog::backdrop { background: #000a; }
   .settings-path-row > div { grid-column: 1; }
   .settings-path-row .path-copy { grid-column: 2; grid-row: 1; }
   .field { display: block; padding: 13px 0; }
-  .field > input:not([type="checkbox"]), .field > .input-suffix { margin-top: 9px; }
+  .field > input:not([type="checkbox"]), .field > textarea, .field > .input-suffix { margin-top: 9px; }
   .field input[type="checkbox"] { float: right; margin-top: -21px; }
   .settings-footer-actions { width: 100%; }
   .settings-footer-actions button { flex: 1; }

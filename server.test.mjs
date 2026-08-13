@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import { createViewerServer, parseArgs, rewritePayloadForCompatibility, rewriteTraceLogForCompatibility, safeChild } from "./server.mjs";
 import { localDate } from "./insights.mjs";
+import { sha256 } from "./agent-schema.mjs";
+import { createProposal, createRun, updateRun } from "./agent-store.mjs";
 
 const fixtureRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 
@@ -48,17 +50,27 @@ test("compatibility rewrite removes only reducer-incompatible internal metadata"
     output_items: [{
       type: "custom_tool_call",
       call_id: "call_duplicate",
+      id: "ctc-response-id",
       input: "work()",
       internal_chat_message_metadata_passthrough: { code_mode_runtime_tool_id: "tool-1" },
     }],
+    response_item: {
+      type: "function_call_output",
+      id: "fc-output-id",
+      call_id: "call_duplicate",
+      output: [{ type: "input_image", image_url: "data:image/png;base64,abc", detail: "original" }],
+    },
     untouched: { value: 42 },
   };
   await writeFile(source, JSON.stringify(payload));
-  assert.equal(await rewritePayloadForCompatibility(source, destination), 1);
+  assert.equal(await rewritePayloadForCompatibility(source, destination), 5);
   const rewritten = JSON.parse(await readFile(destination, "utf8"));
   assert.equal("internal_chat_message_metadata_passthrough" in rewritten.output_items[0], false);
+  assert.equal("id" in rewritten.output_items[0], false);
   assert.equal(rewritten.output_items[0].call_id, "call_duplicate");
   assert.equal(rewritten.output_items[0].input, "work()");
+  assert.deepEqual(rewritten.response_item.output, [{ type: "input_image" }]);
+  assert.equal("id" in rewritten.response_item, false);
   assert.deepEqual(rewritten.untouched, { value: 42 });
 
   const customToolSource = path.join(root, "custom-tool-source.json");
@@ -68,9 +80,11 @@ test("compatibility rewrite removes only reducer-incompatible internal metadata"
       { type: "message", role: "user", content: "keep" },
       { type: "custom_tool_call", call_id: "call_duplicate", input: "work()" },
       { type: "custom_tool_call_output", call_id: "call_duplicate", output: [{ type: "text", text: "done" }] },
+      { type: "function_call", call_id: "call_function", name: "wait", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_function", output: "done" },
     ],
   }));
-  assert.equal(await rewritePayloadForCompatibility(customToolSource, customToolDestination, { dropCustomToolItems: true }), 2);
+  assert.equal(await rewritePayloadForCompatibility(customToolSource, customToolDestination, { dropCustomToolItems: true }), 4);
   const customToolRewritten = JSON.parse(await readFile(customToolDestination, "utf8"));
   assert.deepEqual(customToolRewritten.input, [{ type: "message", role: "user", content: "keep" }]);
 
@@ -78,14 +92,15 @@ test("compatibility rewrite removes only reducer-incompatible internal metadata"
   const traceDestination = path.join(root, "trace-destination.jsonl");
   const events = [
     { seq: 10, payload: { type: "code_cell_started", runtime_cell_id: "31", model_visible_call_id: "call_duplicate", source_js: "work()" } },
-    { seq: 11, payload: { type: "tool_call_started", model_visible_call_id: "call_duplicate" } },
+    { seq: 11, payload: { type: "tool_call_started", tool_call_id: "call_duplicate", model_visible_call_id: "call_duplicate" } },
   ];
   await writeFile(traceSource, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  assert.equal(await rewriteTraceLogForCompatibility(traceSource, traceDestination), 1);
+  assert.equal(await rewriteTraceLogForCompatibility(traceSource, traceDestination), 2);
   const traceEvents = (await readFile(traceDestination, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(traceEvents[0].payload.model_visible_call_id, "call_viewer_10_31");
   assert.equal(traceEvents[0].payload.source_js, "work()");
-  assert.equal(traceEvents[1].payload.model_visible_call_id, "call_duplicate");
+  assert.equal(traceEvents[1].payload.model_visible_call_id, "call_viewer_11_call_duplicate");
+  assert.equal(traceEvents[1].payload.tool_call_id, "call_duplicate");
 });
 
 test("viewer serves trace state and referenced payloads", async (context) => {
@@ -151,12 +166,34 @@ test("viewer serves trace state and referenced payloads", async (context) => {
       llmBaseUrl: "https://llm.example/v1",
       llmModel: "analysis-model",
       llmApiKey: "private-key",
+      agentEnabled: true,
+      agentBaseUrl: "https://agent.example/v1",
+      agentModel: "agent-model",
+      agentApiKey: "agent-private-key",
+      agentMaxTokens: 120_000,
+      agentLookbackDays: 45,
+      agentProjectAllowlist: [fixtureRoot],
+      agentAllowPayloads: false,
     }),
   }).then((response) => response.json());
   assert.equal(settings.scheduleTime, "08:45");
   assert.equal(settings.inactiveSkillDays, 60);
   assert.equal(settings.llmApiKeyConfigured, true);
   assert.equal("llmApiKey" in settings, false);
+  assert.equal(settings.agentApiKeyConfigured, true);
+  assert.equal(settings.agentMaxTokens, 120_000);
+  assert.equal(settings.agentLookbackDays, 45);
+  assert.deepEqual(settings.agentProjectAllowlist, [path.resolve(fixtureRoot)]);
+  assert.equal(settings.agentAllowPayloads, false);
+  assert.equal("agentApiKey" in settings, false);
+
+  const persistedSettings = JSON.parse(await readFile(path.join(dataRoot, "settings.json"), "utf8"));
+  assert.equal(persistedSettings.agentApiKey, "agent-private-key");
+  assert.equal(persistedSettings.agentMaxTokens, 120_000);
+
+  const evidence = await fetch(`${base}/api/agent/evidence?bundleId=sample&itemId=item-user`).then((response) => response.json());
+  assert.equal(evidence.kind, "conversation_window");
+  assert.equal(evidence.value.items[0].itemId, "item-user");
 
   const connection = await fetch(`${base}/api/settings/test-llm`, {
     method: "POST",
@@ -294,6 +331,71 @@ test("viewer refreshes the current daily review automatically", async (context) 
   assert.equal(review?.collection.refreshIntervalMinutes, 1);
 });
 
+test("viewer backfills historical reviews and hides reports without trace bundles", async (context) => {
+  const traceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-review-history-traces-"));
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "codex-review-history-data-"));
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const sampleState = JSON.parse(await readFile(path.join(fixtureRoot, "sample", "state.json"), "utf8"));
+  for (const [id, startedAt] of [["today", today.getTime()], ["yesterday", yesterday.getTime()]]) {
+    const bundleDir = path.join(traceRoot, id);
+    await mkdir(bundleDir, { recursive: true });
+    await writeFile(path.join(bundleDir, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      trace_id: `trace-${id}`,
+      rollout_id: `rollout-${id}`,
+      root_thread_id: "thread-root",
+      started_at_unix_ms: startedAt,
+      raw_event_log: "trace.jsonl",
+      payloads_dir: "payloads",
+    }));
+    await writeFile(path.join(bundleDir, "state.json"), JSON.stringify({
+      ...sampleState,
+      trace_id: `trace-${id}`,
+      rollout_id: `rollout-${id}`,
+      started_at_unix_ms: startedAt,
+      ended_at_unix_ms: startedAt + 4_200,
+    }));
+  }
+  await mkdir(path.join(dataRoot, "reports"), { recursive: true });
+  const emptyReport = (date) => ({
+    schemaVersion: 1,
+    date,
+    generatedAtUnixMs: Date.now() - 60_000,
+    summary: { sessions: 0, modelCalls: 0 },
+  });
+  await writeFile(path.join(dataRoot, "reports", `${localDate(yesterday.getTime())}.json`), JSON.stringify(emptyReport(localDate(yesterday.getTime()))));
+  await writeFile(path.join(dataRoot, "reports", "2020-01-01.json"), JSON.stringify(emptyReport("2020-01-01")));
+
+  const server = createViewerServer({
+    traceRoot,
+    dataRoot,
+    codexHome: dataRoot,
+    codex: "unused",
+    initialReviewDelayMs: 10,
+    reviewRefreshMs: 60_000,
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => server.close());
+  context.after(() => rm(traceRoot, { recursive: true, force: true }));
+  context.after(() => rm(dataRoot, { recursive: true, force: true }));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  const deadline = Date.now() + 1_500;
+  let reviews = [];
+  do {
+    reviews = (await fetch(`${base}/api/reviews`).then((response) => response.json())).reviews;
+    if (reviews.length === 2 && reviews.every((review) => review.summary.sessions === 1)) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+
+  assert.deepEqual(reviews.map((review) => review.date), [localDate(today.getTime()), localDate(yesterday.getTime())]);
+  assert.deepEqual(reviews.map((review) => review.summary.sessions), [1, 1]);
+  assert.equal(reviews.some((review) => review.date === "2020-01-01"), false);
+});
+
 test("viewer separates the latest turn status from an open rollout", async (context) => {
   const traceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-status-traces-"));
   const dataRoot = await mkdtemp(path.join(os.tmpdir(), "codex-status-data-"));
@@ -373,4 +475,58 @@ test("viewer separates the latest turn status from an open rollout", async (cont
   assert.equal(detail.display_status, "completed");
   assert.equal(detail.rollout_status, "running");
   assert.equal(detail.turn_status, "completed");
+});
+
+test("Agent HTTP flow requires approval, applies the exact operation, and rolls back", async (context) => {
+  const traceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-agent-http-traces-"));
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "codex-agent-http-data-"));
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), "codex-agent-http-home-"));
+  const targetPath = path.join(codexHome, "AGENTS.md");
+  await writeFile(targetPath, "Before.\n");
+  const run = await createRun(dataRoot);
+  await updateRun(dataRoot, run.id, { state: "analyzing" });
+  await updateRun(dataRoot, run.id, { state: "awaiting_approval" });
+  const proposal = await createProposal(dataRoot, {
+    runId: run.id,
+    title: "Use preferred guidance",
+    summary: "Update global instructions.",
+    rationale: "Explicit user correction.",
+    target: { type: "global_instructions", scope: "global", path: targetPath, id: "global-agents" },
+    operation: { kind: "instructions.patch", content: "After.\n" },
+    expectedTargetHash: sha256("Before.\n"),
+    evidence: [{ bundleId: "bundle-evidence", signal: "correction", excerpt: "不要这样做" }],
+    risk: "low",
+  });
+  const server = createViewerServer({ traceRoot, dataRoot, codexHome, codex: "unused", initialReviewDelayMs: 60_000 });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => server.close());
+  context.after(() => rm(traceRoot, { recursive: true, force: true }));
+  context.after(() => rm(dataRoot, { recursive: true, force: true }));
+  context.after(() => rm(codexHome, { recursive: true, force: true }));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+
+  const dashboard = await fetch(`${base}/api/agent`).then((response) => response.json());
+  assert.equal(dashboard.proposals[0].id, proposal.id);
+  const denied = await fetch(`${base}/api/agent/proposals/${proposal.id}/apply`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "missing" }),
+  });
+  assert.equal(denied.status, 500);
+  assert.equal(await readFile(targetPath, "utf8"), "Before.\n");
+
+  const decision = await fetch(`${base}/api/agent/proposals/${proposal.id}/decision`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision: "approved" }),
+  }).then((response) => response.json());
+  assert.ok(decision.token);
+  const applied = await fetch(`${base}/api/agent/proposals/${proposal.id}/apply`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: decision.token }),
+  }).then((response) => response.json());
+  assert.equal(applied.change.state, "completed");
+  assert.equal(await readFile(targetPath, "utf8"), "After.\n");
+
+  const rollback = await fetch(`${base}/api/agent/changes/${applied.change.id}/rollback`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: true }),
+  }).then((response) => response.json());
+  assert.equal(rollback.state, "rolled_back");
+  assert.equal(await readFile(targetPath, "utf8"), "Before.\n");
 });

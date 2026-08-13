@@ -6,6 +6,7 @@ const state = {
   sessionStatus: "all", sessionModel: "all", route: "days", mobileView: "tree", isInteracting: false,
   lastRefreshAt: null, refreshInFlight: false, graphScale: 1, graphPanX: 0, graphPanY: 0, graphPanelHeight: null,
   settingsDirty: false, settingsSection: "capture",
+  agent: null, selectedAgentRunId: null, selectedProposalId: null, selectedChangeId: null, agentTab: "proposals", agentPollTimer: null,
 };
 const elements = {
   dayBrowser: document.querySelector("#day-browser"),
@@ -42,6 +43,18 @@ const elements = {
   traceResizeHandle: document.querySelector("#trace-resize-handle"),
   traceWorkspace: document.querySelector("#trace-workspace"),
   reviewsWorkspace: document.querySelector("#reviews-workspace"),
+  agentWorkspace: document.querySelector("#agent-workspace"),
+  agentModelBadge: document.querySelector("#agent-model-badge"),
+  agentRunFull: document.querySelector("#agent-run-full"),
+  agentRunIncremental: document.querySelector("#agent-run-incremental"),
+  agentRefresh: document.querySelector("#agent-refresh"),
+  agentIndexSummary: document.querySelector("#agent-index-summary"),
+  agentRunCount: document.querySelector("#agent-run-count"),
+  agentRunList: document.querySelector("#agent-run-list"),
+  agentPendingCount: document.querySelector("#agent-pending-count"),
+  agentProposalList: document.querySelector("#agent-proposal-list"),
+  agentChangeList: document.querySelector("#agent-change-list"),
+  agentDetail: document.querySelector("#agent-detail-content"),
   reviewCount: document.querySelector("#review-count"),
   reviewList: document.querySelector("#review-list"),
   reviewHeader: document.querySelector("#review-header"),
@@ -61,6 +74,12 @@ const elements = {
   llmClearKeyField: document.querySelector("#llm-clear-key-field"),
   llmTest: document.querySelector("#test-llm"),
   llmTestStatus: document.querySelector("#llm-test-status"),
+  agentEnabled: document.querySelector("#agent-enabled"),
+  agentFields: document.querySelector("#agent-settings-fields"),
+  agentKeyState: document.querySelector("#agent-key-state"),
+  agentClearKeyField: document.querySelector("#agent-clear-key-field"),
+  agentTest: document.querySelector("#test-agent"),
+  agentTestStatus: document.querySelector("#agent-test-status"),
   traceRootSetting: document.querySelector("#trace-root-setting"),
   codexExecutable: document.querySelector("#codex-executable"),
   runReview: document.querySelector("#run-review"),
@@ -137,6 +156,7 @@ async function api(url, options = {}) {
 }
 
 function setMode(mode) {
+  if (mode !== "agent") clearInterval(state.agentPollTimer);
   document.querySelectorAll(".mode").forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
   if (mode === "settings") {
     elements.breadcrumbDay.textContent = "设置";
@@ -147,6 +167,7 @@ function setMode(mode) {
     elements.sessionBrowser.classList.add("hidden");
     elements.traceWorkspace.classList.add("hidden");
     elements.reviewsWorkspace.classList.add("hidden");
+    elements.agentWorkspace.classList.add("hidden");
     openSettings();
     return;
   }
@@ -155,15 +176,19 @@ function setMode(mode) {
     elements.dayBrowser.classList.add("hidden");
     elements.sessionBrowser.classList.add("hidden");
     elements.traceWorkspace.classList.add("hidden");
-    elements.breadcrumbDay.textContent = mode === "reviews" ? "每日复盘" : "设置";
+    elements.reviewsWorkspace.classList.add("hidden");
+    elements.agentWorkspace.classList.add("hidden");
+    elements.breadcrumbDay.textContent = mode === "reviews" ? "每日复盘" : "Agent";
     elements.breadcrumbDay.classList.remove("hidden");
     elements.breadcrumbSessionSeparator.classList.add("hidden");
     elements.activeSessionName.classList.add("hidden");
-    state.route = "reviews";
-    updateHash("reviews");
+    state.route = mode;
+    updateHash(mode);
   }
   elements.reviewsWorkspace.classList.toggle("hidden", mode !== "reviews");
+  elements.agentWorkspace.classList.toggle("hidden", mode !== "agent");
   if (mode === "reviews") loadReviews();
+  if (mode === "agent") loadAgentDashboard();
 }
 
 function updateHash(value, replace = false) {
@@ -183,6 +208,7 @@ function syncRouteFromHash() {
   const raw = window.location.hash.slice(1);
   if (!raw || raw === "traces") return showDays(false);
   if (raw === "reviews") return setMode("reviews");
+  if (raw === "agent") return setMode("agent");
   const [name, query] = raw.split("?");
   const params = new URLSearchParams(query || "");
   if (name === "day" && params.get("value")) return showSessions(params.get("value"), false);
@@ -1330,6 +1356,222 @@ function formatDuration(milliseconds) {
   return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
 }
 
+async function loadAgentDashboard({ preserveSelection = true } = {}) {
+  try {
+    state.agent = await api("/api/agent");
+    if (!preserveSelection) {
+      state.selectedProposalId = null;
+      state.selectedChangeId = null;
+    }
+    renderAgentDashboard();
+    scheduleAgentPolling();
+  } catch (error) {
+    elements.agentIndexSummary.textContent = error.message;
+    elements.agentProposalList.innerHTML = `<div class="agent-empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderAgentDashboard() {
+  const dashboard = state.agent;
+  if (!dashboard) return;
+  elements.agentModelBadge.textContent = dashboard.configured ? dashboard.model : "未配置";
+  elements.agentModelBadge.className = `status-badge ${dashboard.configured ? "ok" : "warn"}`;
+  elements.agentRunFull.disabled = !dashboard.configured || dashboard.runs.some(agentRunActive);
+  elements.agentRunIncremental.disabled = !dashboard.configured || dashboard.runs.some(agentRunActive);
+  elements.agentIndexSummary.textContent = dashboard.configured
+    ? `已索引 ${dashboard.indexedSessions} 个 session · Cursor ${dashboard.traceCursor.slice(0, 10)} · Harness 写入始终需要逐项审批`
+    : "请先在设置中配置 Agent 模型和 API。";
+  elements.agentRunCount.textContent = dashboard.runs.length;
+  elements.agentPendingCount.textContent = dashboard.pendingCount;
+  renderAgentRuns();
+  renderAgentProposals();
+  renderAgentChanges();
+  renderAgentDetail();
+}
+
+function renderAgentRuns() {
+  const runs = state.agent?.runs || [];
+  if (!runs.length) {
+    elements.agentRunList.innerHTML = '<div class="agent-empty">尚未执行分析</div>';
+    return;
+  }
+  elements.agentRunList.innerHTML = runs.map((run) => `<button class="agent-run-row ${run.id === state.selectedAgentRunId ? "active" : ""}" data-agent-run="${escapeHtml(run.id)}"><span><strong>${run.mode === "full" ? "全量分析" : "增量分析"}</strong><em class="agent-state ${escapeHtml(run.state)}">${escapeHtml(agentStateLabel(run.state))}</em></span><small>${escapeHtml(run.progress?.message || run.error || new Date(run.requestedAtUnixMs).toLocaleString())}</small></button>`).join("");
+  elements.agentRunList.querySelectorAll("[data-agent-run]").forEach((button) => button.addEventListener("click", () => {
+    state.selectedAgentRunId = button.dataset.agentRun;
+    state.selectedProposalId = null;
+    state.selectedChangeId = null;
+    renderAgentDashboard();
+  }));
+}
+
+function renderAgentProposals() {
+  const proposals = state.agent?.proposals || [];
+  elements.agentProposalList.classList.toggle("hidden", state.agentTab !== "proposals");
+  if (!proposals.length) {
+    elements.agentProposalList.innerHTML = '<div class="agent-empty">暂无建议。Agent 可以在证据不足时正常返回 0 条建议。</div>';
+    return;
+  }
+  elements.agentProposalList.innerHTML = proposals.map((proposal) => `<button class="agent-proposal-card ${proposal.id === state.selectedProposalId ? "active" : ""}" data-proposal="${escapeHtml(proposal.id)}"><div><h3>${escapeHtml(proposal.title)}</h3><p>${escapeHtml(proposal.summary)}</p></div><span class="agent-card-meta"><em class="proposal-status">${escapeHtml(proposalStatusLabel(proposal.status))}</em><em class="risk-badge ${escapeHtml(proposal.risk)}">${escapeHtml(proposal.risk)}</em></span></button>`).join("");
+  elements.agentProposalList.querySelectorAll("[data-proposal]").forEach((button) => button.addEventListener("click", () => {
+    state.selectedProposalId = button.dataset.proposal;
+    state.selectedChangeId = null;
+    renderAgentDashboard();
+  }));
+}
+
+function renderAgentChanges() {
+  const changes = state.agent?.changes || [];
+  elements.agentChangeList.classList.toggle("hidden", state.agentTab !== "changes");
+  if (!changes.length) {
+    elements.agentChangeList.innerHTML = '<div class="agent-empty">尚无已应用变更</div>';
+    return;
+  }
+  elements.agentChangeList.innerHTML = changes.map((change) => `<button class="agent-change-card ${change.id === state.selectedChangeId ? "active" : ""}" data-change="${escapeHtml(change.id)}"><div><h3>${escapeHtml(change.target?.id || change.target?.type || change.id)}</h3><p>${escapeHtml(change.target?.path || "")}</p></div><span class="agent-card-meta"><em class="proposal-status">${escapeHtml(changeStateLabel(change.state))}</em></span></button>`).join("");
+  elements.agentChangeList.querySelectorAll("[data-change]").forEach((button) => button.addEventListener("click", () => {
+    state.selectedChangeId = button.dataset.change;
+    state.selectedProposalId = null;
+    renderAgentDashboard();
+  }));
+}
+
+function renderAgentDetail() {
+  const proposal = state.agent?.proposals.find((item) => item.id === state.selectedProposalId);
+  const change = state.agent?.changes.find((item) => item.id === state.selectedChangeId);
+  const run = state.agent?.runs.find((item) => item.id === state.selectedAgentRunId);
+  if (proposal) return renderProposalDetail(proposal);
+  if (change) return renderChangeDetail(change);
+  if (run) return renderRunDetail(run);
+  elements.agentDetail.className = "agent-detail-content empty";
+  elements.agentDetail.textContent = "选择一条建议查看证据、目标和变更内容";
+}
+
+function renderProposalDetail(proposal) {
+  elements.agentDetail.className = "agent-detail-content";
+  const evidence = (proposal.evidence || []).map((item, index) => `<button class="agent-evidence-item" data-evidence-index="${index}"><span>${escapeHtml([item.bundleId, item.turnId, item.signal].filter(Boolean).join(" · "))}</span><p>${escapeHtml(item.excerpt || "已保存 evidence locator，可从 Trace 回读")}</p></button>`).join("");
+  const pluginRollbackLimit = proposal.operation?.kind === "plugin.update" && proposal.operation?.selector
+    ? '<div class="settings-callout"><strong>Plugin 回滚边界</strong><span>Codex CLI 只能恢复配置与安装状态，不能保证恢复更新前的二进制版本。</span></div>'
+    : "";
+  elements.agentDetail.innerHTML = `<div class="agent-detail-title"><h2>${escapeHtml(proposal.title)}</h2><p>${escapeHtml(proposal.rationale)}</p></div><section class="agent-detail-section"><h3>目标</h3><div class="agent-target"><span>${escapeHtml(proposal.target.type)} · ${escapeHtml(proposal.target.scope)}</span><code>${escapeHtml(proposal.target.path)}</code><span>expected hash: ${escapeHtml(proposal.expectedTargetHash || "新对象")}</span></div></section><section class="agent-detail-section"><h3>Harness 证据</h3><pre class="agent-operation">${escapeHtml(JSON.stringify(proposal.harnessEvidence || {}, null, 2))}</pre></section><section class="agent-detail-section"><h3>Operation / Diff</h3><pre class="agent-operation">${escapeHtml(JSON.stringify(proposal.diff || proposal.operation, null, 2))}</pre></section><section class="agent-detail-section"><h3>Trace 证据</h3><div class="agent-evidence">${evidence || '<div class="agent-empty">无证据，不能批准</div>'}</div><pre id="agent-evidence-viewer" class="agent-operation hidden"></pre></section>${proposal.requiresRestart ? '<div class="settings-callout"><strong>生效条件</strong><span>需要新建或重启 Codex Session。</span></div>' : ""}${pluginRollbackLimit}${proposalActions(proposal)}`;
+  wireProposalActions(proposal);
+  wireEvidenceActions(proposal);
+}
+
+function proposalActions(proposal) {
+  if (["pending", "deferred"].includes(proposal.status)) return `<div class="agent-decision-actions"><button class="approve" data-proposal-decision="approved">批准</button><button data-proposal-decision="edit">编辑后批准</button><button data-proposal-decision="deferred">暂缓</button><button class="reject" data-proposal-decision="rejected">拒绝</button></div><textarea id="agent-edit-operation" class="agent-edit-operation hidden" aria-label="编辑批准的 operation">${escapeHtml(JSON.stringify(proposal.operation, null, 2))}</textarea>`;
+  if (proposal.status === "approved") return sessionStorage.getItem(`agent-approval:${proposal.id}`)
+    ? '<button class="agent-apply-action" data-apply-proposal>应用已批准变更</button>'
+    : '<button class="agent-apply-action" data-reauthorize-proposal>重新确认并生成审批令牌</button>';
+  if (proposal.status === "applied") return '<div class="settings-callout info"><strong>已应用</strong><span>修改已验证，可在变更历史中回滚。</span></div>';
+  return `<div class="settings-callout"><strong>${escapeHtml(proposalStatusLabel(proposal.status))}</strong><span>该建议当前不可操作。</span></div>`;
+}
+
+function wireEvidenceActions(proposal) {
+  elements.agentDetail.querySelectorAll("[data-evidence-index]").forEach((button) => button.addEventListener("click", async () => {
+    const evidence = proposal.evidence[Number(button.dataset.evidenceIndex)];
+    const viewer = document.querySelector("#agent-evidence-viewer");
+    const allowedKeys = new Set(["bundleId", "turnId", "itemId", "toolCallId", "payloadId"]);
+    const params = new URLSearchParams(Object.fromEntries(Object.entries(evidence).filter(([key, value]) => allowedKeys.has(key) && value !== null && value !== undefined)));
+    viewer.classList.remove("hidden");
+    viewer.textContent = "正在回读 Trace 证据…";
+    try {
+      const result = await api(`/api/agent/evidence?${params}`);
+      viewer.textContent = JSON.stringify(result, null, 2);
+    } catch (error) {
+      viewer.textContent = error.message;
+    }
+  }));
+}
+
+function wireProposalActions(proposal) {
+  elements.agentDetail.querySelectorAll("[data-proposal-decision]").forEach((button) => button.addEventListener("click", async () => {
+    const decision = button.dataset.proposalDecision;
+    if (decision === "edit") {
+      const editor = document.querySelector("#agent-edit-operation");
+      editor.classList.toggle("hidden");
+      if (!editor.classList.contains("hidden")) editor.focus();
+      button.textContent = editor.classList.contains("hidden") ? "编辑后批准" : "确认编辑并批准";
+      if (!editor.classList.contains("hidden")) return;
+      let editedOperation;
+      try { editedOperation = JSON.parse(editor.value); } catch { showToast("Operation 必须是有效 JSON", "error"); return; }
+      return decideProposal(proposal, "approved", editedOperation);
+    }
+    await decideProposal(proposal, decision);
+  }));
+  elements.agentDetail.querySelector("[data-apply-proposal]")?.addEventListener("click", () => applyProposal(proposal));
+  elements.agentDetail.querySelector("[data-reauthorize-proposal]")?.addEventListener("click", () => decideProposal(proposal, "approved"));
+}
+
+async function decideProposal(proposal, decision, editedOperation) {
+  if (decision === "rejected" && !window.confirm("拒绝这条建议？Agent 后续会避免重复提出完全相同的变更。")) return;
+  try {
+    const result = await api(`/api/agent/proposals/${encodeURIComponent(proposal.id)}/decision`, { method: "POST", body: JSON.stringify({ decision, editedOperation }) });
+    if (result.token) sessionStorage.setItem(`agent-approval:${proposal.id}`, result.token);
+    showToast(decision === "approved" ? "建议已批准，仍需点击应用" : "建议已处理", "success");
+    await loadAgentDashboard();
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function applyProposal(proposal) {
+  const token = sessionStorage.getItem(`agent-approval:${proposal.id}`);
+  if (!token) { showToast("批准令牌不在当前窗口，请重新创建并批准建议", "error"); return; }
+  if (!window.confirm(`应用这项 Harness 变更？\n\n${proposal.title}\n${proposal.target.path}`)) return;
+  try {
+    await api(`/api/agent/proposals/${encodeURIComponent(proposal.id)}/apply`, { method: "POST", body: JSON.stringify({ token }) });
+    sessionStorage.removeItem(`agent-approval:${proposal.id}`);
+    showToast("变更已应用并验证", "success");
+    await loadAgentDashboard();
+  } catch (error) {
+    showToast(error.message, "error");
+    await loadAgentDashboard();
+  }
+}
+
+function renderChangeDetail(change) {
+  elements.agentDetail.className = "agent-detail-content";
+  const pluginRollbackLimit = change.operation?.kind === "plugin.update" && change.operation?.selector
+    ? '<div class="settings-callout"><strong>Plugin 回滚边界</strong><span>回滚只恢复配置与安装状态，不保证恢复更新前的二进制版本。</span></div>'
+    : "";
+  elements.agentDetail.innerHTML = `<div class="agent-detail-title"><h2>${escapeHtml(change.target?.id || change.id)}</h2><p>${escapeHtml(change.target?.path || "")}</p></div><section class="agent-detail-section"><h3>应用后的 Harness Diff</h3><pre class="agent-operation">${escapeHtml(JSON.stringify(change.diff || change.operation || {}, null, 2))}</pre></section><section class="agent-detail-section"><h3>审计记录</h3><pre class="agent-operation">${escapeHtml(JSON.stringify({ state: change.state, beforeHash: change.beforeHash, afterHash: change.afterHash, verification: change.verification, rollback: change.rollback, error: change.error }, null, 2))}</pre></section>${pluginRollbackLimit}${change.state === "completed" && !change.rolledBackAtUnixMs ? '<button class="agent-rollback-action" data-rollback-change>回滚这项变更</button>' : ""}`;
+  elements.agentDetail.querySelector("[data-rollback-change]")?.addEventListener("click", async () => {
+    if (!window.confirm("确认回滚这项变更？回滚前会校验目标没有被后续外部修改。")) return;
+    try {
+      await api(`/api/agent/changes/${encodeURIComponent(change.id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true }) });
+      showToast("变更已回滚", "success");
+      await loadAgentDashboard();
+    } catch (error) { showToast(error.message, "error"); }
+  });
+}
+
+function renderRunDetail(run) {
+  elements.agentDetail.className = "agent-detail-content";
+  const messages = (run.messages || []).slice(-30).map((item) => `<div class="agent-evidence-item"><span>${escapeHtml(item.role)}${item.toolName ? ` · ${escapeHtml(item.toolName)}` : ""}</span><p>${escapeHtml(String(item.content || "").slice(0, 1200))}</p></div>`).join("");
+  elements.agentDetail.innerHTML = `<div class="agent-detail-title"><h2>${run.mode === "full" ? "全量分析" : "增量分析"}</h2><p>${escapeHtml(run.progress?.message || run.error || "")}</p></div><section class="agent-detail-section"><h3>运行状态</h3><pre class="agent-operation">${escapeHtml(JSON.stringify({ state: run.state, baseCursor: run.baseCursor, completedCursor: run.analysisCursor, scope: run.scope, budgets: run.budgets, usage: run.usage, progress: run.progress }, null, 2))}</pre></section><section class="agent-detail-section"><h3>Agent 对话与工具轨迹</h3><div class="agent-evidence">${messages || '<div class="agent-empty">暂无消息</div>'}</div></section>${agentRunActive(run) ? '<button class="agent-rollback-action" data-stop-run>停止分析</button>' : run.state === "failed" ? '<button class="agent-resume-action" data-resume-run>从原始 Cursor 恢复</button>' : ""}`;
+  elements.agentDetail.querySelector("[data-stop-run]")?.addEventListener("click", async () => { await api(`/api/agent/runs/${encodeURIComponent(run.id)}`, { method: "DELETE" }); await loadAgentDashboard(); });
+  elements.agentDetail.querySelector("[data-resume-run]")?.addEventListener("click", async () => { await api(`/api/agent/runs/${encodeURIComponent(run.id)}/resume`, { method: "POST", body: "{}" }); await loadAgentDashboard(); });
+}
+
+async function startAgentRun(mode) {
+  try {
+    const run = await api("/api/agent/runs", { method: "POST", body: JSON.stringify({ mode, cursor: mode === "incremental" ? state.agent?.incrementalCursor : null }) });
+    state.selectedAgentRunId = run.id;
+    showToast(mode === "full" ? "已开始全量分析" : "已开始增量分析", "success");
+    await loadAgentDashboard();
+  } catch (error) { showToast(error.message, "error"); }
+}
+
+function scheduleAgentPolling() {
+  clearInterval(state.agentPollTimer);
+  if (state.route !== "agent" || !state.agent?.runs.some(agentRunActive)) return;
+  state.agentPollTimer = setInterval(() => { if (!state.isInteracting) loadAgentDashboard(); }, 2_000);
+}
+
+function agentRunActive(run) { return ["idle", "analyzing", "applying", "verifying"].includes(run.state); }
+function agentStateLabel(value) { return ({ idle: "等待", analyzing: "分析中", awaiting_approval: "待审批", applying: "应用中", verifying: "验证中", completed: "完成", failed: "失败" })[value] || value; }
+function proposalStatusLabel(value) { return ({ draft: "草稿", pending: "待审批", approved: "已批准", rejected: "已拒绝", deferred: "暂缓", applying: "应用中", applied: "已应用", failed: "失败", superseded: "已替代" })[value] || value; }
+function changeStateLabel(value) { return ({ applying: "应用中", verifying: "验证中", completed: "已完成", failed: "失败", rolled_back: "已回滚" })[value] || value; }
+
 async function openSettings() {
   try {
     state.settings = await api("/api/settings");
@@ -1350,7 +1592,26 @@ async function openSettings() {
     elements.llmClearKeyField.classList.toggle("hidden", !state.settings.llmApiKeyConfigured);
     elements.llmTestStatus.textContent = "";
     elements.llmTestStatus.className = "";
+    elements.settingsForm.elements.agentEnabled.checked = state.settings.agentEnabled;
+    elements.settingsForm.elements.agentBaseUrl.value = state.settings.agentBaseUrl;
+    elements.settingsForm.elements.agentModel.value = state.settings.agentModel;
+    elements.settingsForm.elements.agentApiKey.value = "";
+    elements.settingsForm.elements.agentTimeoutSeconds.value = state.settings.agentTimeoutSeconds;
+    elements.settingsForm.elements.agentMaxRounds.value = state.settings.agentMaxRounds;
+    elements.settingsForm.elements.agentMaxTokens.value = state.settings.agentMaxTokens;
+    elements.settingsForm.elements.agentMaxInputBytes.value = state.settings.agentMaxInputBytes;
+    elements.settingsForm.elements.agentMaxPayloadBytes.value = state.settings.agentMaxPayloadBytes;
+    elements.settingsForm.elements.agentMaxDurationMinutes.value = state.settings.agentMaxDurationMinutes;
+    elements.settingsForm.elements.agentLookbackDays.value = state.settings.agentLookbackDays;
+    elements.settingsForm.elements.agentProjectAllowlist.value = (state.settings.agentProjectAllowlist || []).join("\n");
+    elements.settingsForm.elements.agentAllowPayloads.checked = state.settings.agentAllowPayloads !== false;
+    elements.settingsForm.elements.clearAgentApiKey.checked = false;
+    elements.agentKeyState.textContent = state.settings.agentApiKeyConfigured ? "已保存密钥，留空将继续使用" : "尚未保存密钥；本地服务可留空";
+    elements.agentClearKeyField.classList.toggle("hidden", !state.settings.agentApiKeyConfigured);
+    elements.agentTestStatus.textContent = "";
+    elements.agentTestStatus.className = "";
     syncLlmSettingsFields();
+    syncAgentSettingsFields();
     document.querySelector("#data-root").textContent = state.config?.dataRoot || state.settings.dataRoot || "未配置";
     elements.traceRootSetting.textContent = state.config?.traceRoot || "未配置";
     elements.codexExecutable.textContent = state.config?.codexExecutable || "codex";
@@ -1390,8 +1651,14 @@ function setSettingsSection(section, { scroll = true } = {}) {
   const target = document.querySelector(`[data-settings-panel="${section}"]`);
   if (!target) return;
   state.settingsSection = section;
-  document.querySelectorAll(".settings-nav-item").forEach((item) => item.classList.toggle("active", item.dataset.settingsSection === section));
+  let activeNavItem = null;
+  document.querySelectorAll(".settings-nav-item").forEach((item) => {
+    const active = item.dataset.settingsSection === section;
+    item.classList.toggle("active", active);
+    if (active) activeNavItem = item;
+  });
   if (scroll) elements.settingsContent.scrollTo({ top: Math.max(0, target.offsetTop - 12), behavior: "smooth" });
+  activeNavItem?.scrollIntoView({ behavior: "auto", block: "nearest", inline: "center" });
 }
 
 async function copySettingPath(button) {
@@ -1416,6 +1683,10 @@ function syncLlmSettingsFields() {
   elements.llmFields.disabled = !elements.llmEnabled.checked;
 }
 
+function syncAgentSettingsFields() {
+  elements.agentFields.disabled = !elements.agentEnabled.checked;
+}
+
 function llmSettingsPayload() {
   const form = elements.settingsForm.elements;
   const payload = {
@@ -1429,6 +1700,27 @@ function llmSettingsPayload() {
   return payload;
 }
 
+function agentSettingsPayload() {
+  const form = elements.settingsForm.elements;
+  const payload = {
+    agentEnabled: form.agentEnabled.checked,
+    agentBaseUrl: form.agentBaseUrl.value,
+    agentModel: form.agentModel.value,
+    agentTimeoutSeconds: Number(form.agentTimeoutSeconds.value),
+    agentMaxRounds: Number(form.agentMaxRounds.value),
+    agentMaxTokens: Number(form.agentMaxTokens.value),
+    agentMaxInputBytes: Number(form.agentMaxInputBytes.value),
+    agentMaxPayloadBytes: Number(form.agentMaxPayloadBytes.value),
+    agentMaxDurationMinutes: Number(form.agentMaxDurationMinutes.value),
+    agentLookbackDays: Number(form.agentLookbackDays.value),
+    agentProjectAllowlist: form.agentProjectAllowlist.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+    agentAllowPayloads: form.agentAllowPayloads.checked,
+  };
+  if (form.agentApiKey.value.trim()) payload.agentApiKey = form.agentApiKey.value.trim();
+  if (form.clearAgentApiKey.checked) payload.clearAgentApiKey = true;
+  return payload;
+}
+
 async function saveSettings() {
   const form = elements.settingsForm.elements;
   const payload = {
@@ -1439,13 +1731,38 @@ async function saveSettings() {
     inactiveMcpDays: Number(form.inactiveMcpDays.value),
     retentionDays: Number(form.retentionDays.value),
     ...llmSettingsPayload(),
+    ...agentSettingsPayload(),
   };
   state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
   form.llmApiKey.value = "";
   form.clearLlmApiKey.checked = false;
+  form.agentApiKey.value = "";
+  form.clearAgentApiKey.checked = false;
   state.settingsDirty = false;
   updateSettingsDraftStatus();
   elements.settingsSaved.textContent = "已保存设置";
+}
+
+async function testAgentSettings() {
+  if (!elements.agentEnabled.checked) {
+    elements.agentTestStatus.className = "error-text";
+    elements.agentTestStatus.textContent = "请先启用 Agent";
+    return;
+  }
+  if (!elements.settingsForm.reportValidity()) return;
+  elements.agentTest.disabled = true;
+  elements.agentTestStatus.className = "";
+  elements.agentTestStatus.textContent = "正在连接…";
+  try {
+    const result = await api("/api/settings/test-agent", { method: "POST", body: JSON.stringify(agentSettingsPayload()) });
+    elements.agentTestStatus.className = "success-text";
+    elements.agentTestStatus.textContent = `连接成功 · ${result.model} · ${result.latencyMs} ms`;
+  } catch (error) {
+    elements.agentTestStatus.className = "error-text";
+    elements.agentTestStatus.textContent = error.message;
+  } finally {
+    elements.agentTest.disabled = false;
+  }
 }
 
 async function testLlmSettings() {
@@ -1529,6 +1846,16 @@ elements.settingsForm.addEventListener("input", setSettingsDirty);
 elements.settingsForm.addEventListener("change", setSettingsDirty);
 elements.llmEnabled.addEventListener("change", syncLlmSettingsFields);
 elements.llmTest.addEventListener("click", testLlmSettings);
+elements.agentEnabled.addEventListener("change", syncAgentSettingsFields);
+elements.agentTest.addEventListener("click", testAgentSettings);
+elements.agentRunFull.addEventListener("click", () => startAgentRun("full"));
+elements.agentRunIncremental.addEventListener("click", () => startAgentRun("incremental"));
+elements.agentRefresh.addEventListener("click", () => loadAgentDashboard());
+document.querySelectorAll("[data-agent-tab]").forEach((button) => button.addEventListener("click", () => {
+  state.agentTab = button.dataset.agentTab;
+  document.querySelectorAll("[data-agent-tab]").forEach((item) => item.classList.toggle("active", item === button));
+  renderAgentDashboard();
+}));
 elements.settingsDialog.addEventListener("close", () => {
   state.settingsDirty = false;
   if (document.querySelector('.mode.active')?.dataset.mode === "settings") syncRouteFromHash();
