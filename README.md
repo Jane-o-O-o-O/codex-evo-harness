@@ -1,4 +1,4 @@
-# Codex Trace Viewer
+# Codex Trace Viewer：本地 Trace 可视化与 Harness 优化工具
 
 ![Codex Trace Viewer 产品界面](./docs/images/product-overview.png)
 
@@ -10,11 +10,41 @@
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-357a38.svg)](https://nodejs.org/)
 [![Local First](https://img.shields.io/badge/Data-Local--first-2f80ed.svg)](#隐私与安全边界)
 
-Codex Trace Viewer 是一个面向 Codex 用户的本地可观测与 Harness 演进工作台。它读取 Codex rollout trace bundle，将原始事件归约为结构化状态，并提供日期、Session、Trace、时间线、关系图、对话和节点详情等多层视图。
+Codex Trace Viewer 是一个开源、本地优先的 Codex Trace 可视化、Agent 可观测性与 Harness 优化工具，采用 MIT 许可证。它读取 Codex rollout trace bundle，将原始事件归约为结构化状态，并提供日期、Session、Trace、时间线、关系图、对话和节点详情等多层视图，帮助开发者排查工具调用失败、分析 Token 用量和复盘 AI 编程工作流。
 
 在可观测能力之上，项目还提供一个受控 Agent：它从全量或增量 Trace 中寻找重复问题，基于证据提出对 AGENTS、Skills、MCP、Rules、Hooks、Plugins 和 `config.toml` 的改进建议。Agent 不能直接写入 Harness，只有经过用户逐项批准的精确操作才会被执行。
 
 本项目不依赖 Langfuse、Docker、数据库或云端账号，原始 Trace 和分析结果默认保存在本机。
+
+**English summary:** Codex Trace Viewer is an open-source, local-first trace visualization and agent observability tool for Codex rollout traces. It provides session browsing, tool-call inspection, token usage analysis, daily reviews, and evidence-backed Harness improvement proposals with explicit user approval, verification, and rollback support. It runs as a Node.js web service or an Electron desktop app and is an independent MIT-licensed project.
+
+## 项目速览
+
+| 项目 | 说明 |
+| --- | --- |
+| 项目名称 | Codex Trace Viewer |
+| 源码仓库 | [Jane-o-O-o-O/Make-Codex-Your-Own](https://github.com/Jane-o-O-o-O/Make-Codex-Your-Own) |
+| 主要用途 | Codex 会话回放、工具调用调试、耗时与 Token 分析、每日复盘、Harness 改进建议 |
+| 数据输入 | 本机 Codex runtime 生成的 rollout trace bundle，包括 `manifest.json`、`trace.jsonl`、Payload 和归约后的 `state.json` |
+| 运行方式 | Node.js 22+ 本地 Web 服务；Electron 桌面应用；提供 Windows NSIS 打包配置 |
+| 模型需求 | 浏览 Trace 和生成规则日报无需外部模型；LLM 复盘与 Agent 分析需要用户配置 OpenAI 兼容模型服务 |
+| 数据存储 | 本地文件系统；启用模型分析后，会向用户配置的模型端点发送相应分析输入 |
+| 许可证与归属 | MIT；独立社区项目，不隶属于 OpenAI、Codex 或 Langfuse |
+
+快速导航：[开始使用](#30-秒开始使用) · [适用场景](#适用场景) · [常见问题](#常见问题) · [隐私边界](#隐私与安全边界) · [English overview](./ABOUT.md) · [扫描与优化记录](./docs/project-review.md)
+
+## 适用场景
+
+| 你要解决的问题 | 可以使用的功能 |
+| --- | --- |
+| 如何查看 Codex 的执行轨迹和工具调用？ | 从日期与 Session 进入 Trace，联动查看调用树、时间线、对话和节点输入输出 |
+| Codex 任务为什么耗时较长？ | 检查模型调用、工具执行的耗时与失败节点，定位需要进一步排查的环节 |
+| 如何统计 Codex Token 用量？ | 查看单次模型调用和每日汇总的输入、输出、推理 Token；统计依赖 Trace 中记录的 usage |
+| 如何找到重复失败和用户纠正反馈？ | 使用 Trace 查询与 Agent 证据定位，回读相关工具调用和对话上下文 |
+| 如何优化 AGENTS.md、Skills 或 MCP 配置？ | 让 Agent 基于 Trace 提出建议，检查差异后逐项批准，再执行验证与必要的回滚 |
+| 如何复盘日常 AI 编程习惯？ | 查看按项目、模型、工具、Skill 和 MCP 汇总的本地日报，可选启用模型分析 |
+
+本项目适合已有本地 Codex Trace、希望调试和改进个人工作流的开发者。它不采集云端 ChatGPT 网页会话，也不提供通用的跨框架遥测接入或托管监控服务。
 
 ## 为什么需要它
 
@@ -287,6 +317,30 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-windows.ps1
 
 ## 常见问题
 
+### Codex Trace Viewer 是什么？与 Make-Codex-Your-Own 有什么关系？
+
+Codex Trace Viewer 是本仓库提供的应用名称，`Make-Codex-Your-Own` 是 GitHub 仓库名称。项目将本地 Codex 执行日志转换成可浏览的 Trace，并通过每日复盘和需要人工审批的 Agent 建议，帮助用户改进自己的 Harness。
+
+### 什么是 Harness？可以自动修改 AGENTS.md 吗？
+
+在本项目中，Harness 指影响 Codex 工作方式的外部指令、能力和运行配置，包括 `AGENTS.md`、Skills、MCP、Rules、Hooks、Plugins 和 `config.toml`。Agent 可以提出包含证据和差异的修改建议；实际写入需要用户逐项批准，执行时创建快照并验证结果。外部 CLI 操作存在无法可靠自动恢复的情况，详见[Harness 受控自进化](#harness-受控自进化)。
+
+### 不配置 API Key，能查看 Codex Trace 吗？
+
+可以。Trace 浏览、调用树、时间线、Token 统计和规则日报在本地运行，不依赖模型 API Key。模型生成的复盘和 Harness 建议需要配置 OpenAI 兼容模型端点；端点是否要求 API Key 由所用服务决定。
+
+### 本地 Trace 或代码会发送给外部模型吗？
+
+单纯浏览 Trace 不需要模型服务。启用 LLM 日报时，应用会向配置的端点发送有上限的聚合统计和脱敏样例。启用 Agent 分析时，模型还可能收到作用域内的 Trace 查询结果和 Harness 检查内容；Payload 读取由开关及字节预算控制。请按数据使用要求选择模型端点和分析范围，脱敏规则不等于识别所有敏感内容。
+
+### Codex Trace Viewer 与 Langfuse 的关系是什么？
+
+Codex Trace Viewer 是独立项目，不嵌入或依赖 Langfuse。它的输入是本地 Codex rollout trace bundle，运行时使用文件系统存储。若要选择工具，先确认需要的是已有 Codex Trace 的本地调试，还是面向其他应用的遥测接入；本项目目前聚焦前者。
+
+### Token 统计是否等于实际账单费用？
+
+不等于。项目显示 Trace 中记录的 Token 用量，没有承诺与服务商账单一致，也没有将所有模型用量自动换算为费用。缺失 usage 的调用、模型价格和计费规则都可能影响实际账单。
+
 ### 页面没有 Session
 
 确认 `--trace-root` 或 `CODEX_ROLLOUT_TRACE_ROOT` 指向包含 `trace-*` 子目录的位置，并检查每个目录中是否存在 `manifest.json`。
@@ -326,6 +380,8 @@ npm test
 
 测试覆盖 Trace 服务、Payload 读取、Raw bundle 归约、日报生成、LLM 兼容接口、增量索引、Agent 状态机、审批令牌、受控 Harness 修改、验证、失败恢复与回滚等关键路径。
 
+2026-09-22 的优化验证中，88 项自动化测试通过，覆盖超过 1,000 个 Session 的完整统计、增量 Cursor 保留、损坏状态重试及并发 JSON 写入。测试环境、模拟数据性能对比和仍需处理的 Electron 依赖问题见[项目扫描与优化记录](./docs/project-review.md)。这些结果对应记录中的验证环境，不代表所有平台或桌面安装包均已验证。
+
 主要模块：
 
 | 模块 | 职责 |
@@ -337,6 +393,7 @@ npm test
 | `agent-engine.mjs` | Agent 分析循环与只读工具编排 |
 | `agent-service.mjs` | Proposal 决策、应用、验证与恢复 |
 | `agent-store.mjs` | Agent 状态持久化与 schema 迁移 |
+| `atomic-file.mjs` | JSON 原子保存与同一文件的写入排队 |
 | `harness-tools.mjs` | Harness 发现、读取、哈希与脱敏 |
 | `harness-mutations.mjs` | 受控修改、快照、验证与回滚 |
 | `desktop/` | Electron 窗口、设置向导与桌面生命周期 |
