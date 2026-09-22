@@ -6,6 +6,7 @@ const state = {
   sessionStatus: "all", sessionModel: "all", route: "days", mobileView: "tree", isInteracting: false,
   lastRefreshAt: null, refreshInFlight: false, graphScale: 1, graphPanX: 0, graphPanY: 0, graphPanelHeight: null,
   settingsDirty: false, settingsSection: "capture",
+  traceRequestId: 0, payloadRequestId: 0,
   agent: null, selectedAgentRunId: null, selectedProposalId: null, selectedChangeId: null, agentTab: "proposals", agentPollTimer: null,
 };
 const elements = {
@@ -993,7 +994,10 @@ function formatPreview(value) {
 }
 
 async function loadNodePayload(payloadId, label) {
+  const requestId = ++state.payloadRequestId;
   const preview = document.querySelector("#node-payload-preview");
+  if (!preview) return;
+  const isCurrent = () => requestId === state.payloadRequestId && preview.isConnected;
   const meta = document.querySelector("#payload-meta");
   preview.textContent = `正在加载 ${label}…`;
   state.activePayload = null;
@@ -1001,12 +1005,14 @@ async function loadNodePayload(payloadId, label) {
   document.querySelector("[data-download-payload]")?.setAttribute("disabled", "true");
   try {
     const payload = await api(`/api/traces/${encodeURIComponent(state.selectedTraceId)}/payloads/${encodeURIComponent(payloadId)}`);
+    if (!isCurrent()) return;
     state.activePayload = { id: payloadId, label, value: payload };
     preview.textContent = formatPreview(payload);
     if (meta) meta.textContent = `${label} · ${new Blob([JSON.stringify(payload)]).size.toLocaleString()} bytes`;
     document.querySelector("[data-copy-payload]")?.removeAttribute("disabled");
     document.querySelector("[data-download-payload]")?.removeAttribute("disabled");
   } catch (error) {
+    if (!isCurrent()) return;
     preview.textContent = error.message;
     if (meta) meta.textContent = "加载失败，可重新点击 Payload 重试";
   }
@@ -1117,6 +1123,8 @@ function installTrace(id, trace, nodeId = "") {
 }
 
 async function loadTrace(id, options = {}) {
+  const requestId = ++state.traceRequestId;
+  const isCurrent = () => requestId === state.traceRequestId && state.route === "trace" && state.selectedTraceId === id;
   state.selectedTraceId = id;
   state.selectedRowId = null;
   renderSessions();
@@ -1124,8 +1132,10 @@ async function loadTrace(id, options = {}) {
   elements.timeline.innerHTML = '<div class="loading-state" aria-live="polite"><span class="spinner"></span>正在读取 Trace…</div>';
   try {
     const trace = await api(`/api/traces/${encodeURIComponent(id)}`);
+    if (!isCurrent()) return;
     installTrace(id, trace, options.nodeId || "");
   } catch (error) {
+    if (!isCurrent()) return;
     if (error.status === 409) renderReductionRequired(error);
     else elements.timeline.innerHTML = `<div class="error" role="alert"><strong>读取 Trace 失败</strong><p>${escapeHtml(error.message)}</p><button class="retry-button" id="retry-trace">重试</button></div>`;
     document.querySelector("#retry-trace")?.addEventListener("click", () => loadTrace(id, options));
@@ -1168,9 +1178,13 @@ async function refresh({ initial = false, announce = false } = {}) {
 }
 
 async function refreshCurrentTrace() {
-  const selectedId = state.selectedRowId;
+  const id = state.selectedTraceId;
+  const requestId = state.traceRequestId;
+  const isCurrent = () => state.route === "trace" && state.selectedTraceId === id && state.traceRequestId === requestId;
   try {
-    const trace = await api(`/api/traces/${encodeURIComponent(state.selectedTraceId)}`);
+    const trace = await api(`/api/traces/${encodeURIComponent(id)}`);
+    if (!isCurrent()) return;
+    const selectedId = state.selectedRowId;
     state.trace = trace;
     state.traceTree = buildTraceTree(trace);
     state.selectedRowId = selectedId && findTraceNode(state.traceTree, selectedId) ? selectedId : state.traceTree.id;
@@ -1179,6 +1193,7 @@ async function refreshCurrentTrace() {
     renderGraph();
     selectTraceNode(state.selectedRowId, { focus: false });
   } catch (error) {
+    if (!isCurrent()) return;
     if (error.status === 409) renderReductionRequired(error);
   }
 }
@@ -1380,6 +1395,7 @@ function renderAgentDashboard() {
   elements.agentIndexSummary.textContent = dashboard.configured
     ? `已索引 ${dashboard.indexedSessions} 个 session · Cursor ${dashboard.traceCursor.slice(0, 10)} · Harness 写入始终需要逐项审批`
     : "请先在设置中配置 Agent 模型和 API。";
+  if (dashboard.indexErrors?.length) elements.agentIndexSummary.textContent += ` · ${dashboard.indexErrors.length} 个 Trace 暂时无法读取，修复后会自动重新索引`;
   elements.agentRunCount.textContent = dashboard.runs.length;
   elements.agentPendingCount.textContent = dashboard.pendingCount;
   renderAgentRuns();

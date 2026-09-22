@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createReadStream } from "node:fs";
 import { access, copyFile, cp, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -222,9 +221,22 @@ async function rawLogStable(bundleDir, waitMs) {
   }
 }
 
-async function discoverBundles(traceRoot, reductionStates = null) {
-  if (!(await exists(traceRoot))) return [];
+// Share concurrent scans, but re-stat on each subsequent poll so live traces stay fresh.
+export function createBundleDiscovery(traceRoot, reductionStates = new Map()) {
+  traceRoot = path.resolve(traceRoot);
+  const summaries = new Map();
+  let pending = null;
+  return () => {
+    if (!pending) pending = discoverBundles(traceRoot, reductionStates, summaries).finally(() => { pending = null; });
+    return pending;
+  };
+}
+
+async function discoverBundles(traceRoot, reductionStates = null, summaries = new Map()) {
+  if (!(await exists(traceRoot))) { summaries.clear(); return []; }
   const entries = await readdir(traceRoot, { withFileTypes: true });
+  const statePaths = new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(traceRoot, entry.name, "state.json")));
+  for (const file of summaries.keys()) if (!statePaths.has(file)) summaries.delete(file);
   const bundles = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -235,7 +247,8 @@ async function discoverBundles(traceRoot, reductionStates = null) {
       const manifest = await readJson(manifestPath);
       const statePath = path.join(bundleDir, "state.json");
       const stateInfo = (await exists(statePath)) ? await stat(statePath) : null;
-      const summary = stateInfo ? await summarizeState(statePath) : null;
+      if (!stateInfo) summaries.delete(statePath);
+      const summary = stateInfo ? await summarizeState(statePath, stateInfo, summaries) : null;
       const reduction = reductionStates?.get(bundleDir);
       const rawEventState = await readRawEventState(bundleDir);
       const rawComplete = Boolean(rawEventState?.rolloutEnded || rawEventState?.turnEnded);
@@ -285,8 +298,13 @@ async function discoverBundles(traceRoot, reductionStates = null) {
   return bundles.sort((a, b) => b.startedAtUnixMs - a.startedAtUnixMs);
 }
 
-async function summarizeState(statePath) {
+async function summarizeState(statePath, info, summaries) {
   try {
+    const fingerprint = `${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.ino}`;
+    const cached = summaries.get(statePath);
+    if (cached?.fingerprint === fingerprint) {
+      return { ...cached.summary, project: await stateProject(cached.projectState, path.dirname(statePath)) || cached.summary.project };
+    }
     const state = await readJson(statePath);
     const calls = Object.values(state.inference_calls || {});
     const usage = calls.reduce((totals, call) => {
@@ -302,8 +320,7 @@ async function summarizeState(statePath) {
     const firstUserMessage = userMessages.find((message) => !message.startsWith("<environment_context>") && !message.startsWith("<system>") && !message.startsWith("# AGENTS")) || userMessages[0] || "";
     const startedAtUnixMs = state.started_at_unix_ms;
     const endedAtUnixMs = state.ended_at_unix_ms;
-    const project = await stateProject(state, path.dirname(statePath));
-    return {
+    const summary = {
       status: state.status || "unknown",
       endedAtUnixMs: endedAtUnixMs ?? null,
       durationMs: endedAtUnixMs == null ? null : Math.max(0, endedAtUnixMs - startedAtUnixMs),
@@ -311,9 +328,15 @@ async function summarizeState(statePath) {
       models: [...new Set(calls.map((call) => call.model).filter(Boolean))],
       tools: Object.keys(state.tool_calls || {}).length,
       ...usage,
-      project: project || state.project || state.cwd || state.root_thread?.cwd || "",
+      project: state.project || state.cwd || state.root_thread?.cwd || "",
     };
+    // Keep only summary data in memory, not full conversations or tool results.
+    const reference = Object.values(state.raw_payloads || {}).find((item) => item.kind?.type === "session_metadata");
+    const projectState = { raw_payloads: reference ? { metadata: reference } : {} };
+    summaries.set(statePath, { fingerprint, summary, projectState });
+    return { ...summary, project: await stateProject(projectState, path.dirname(statePath)) || summary.project };
   } catch {
+    summaries.delete(statePath);
     return null;
   }
 }
@@ -529,11 +552,43 @@ export async function runReducerWithCompatibility(codex, bundleDir) {
 }
 
 function json(response, status, body) {
+  if (response.destroyed || response.writableEnded) return;
+  if (response.headersSent) { response.destroy(); return; }
   response.writeHead(status, {
     "content-type": contentTypes[".json"],
     "cache-control": "no-store",
   });
   response.end(JSON.stringify(body));
+}
+
+async function streamFile(response, file, cacheControl) {
+  let handle;
+  try {
+    handle = await open(file, "r");
+    if (!(await handle.stat()).isFile()) {
+      await handle.close();
+      json(response, 404, { error: "file not found" });
+      return;
+    }
+  } catch (error) {
+    await handle?.close();
+    if (["ENOENT", "ENOTDIR", "EISDIR"].includes(error.code)) {
+      json(response, 404, { error: "file not found" });
+      return;
+    }
+    throw error;
+  }
+  if (response.destroyed) { await handle.close(); return; }
+  const stream = handle.createReadStream();
+  const stop = () => stream.destroy();
+  response.once("close", stop);
+  stream.once("close", () => response.off("close", stop));
+  stream.once("error", () => response.destroy());
+  response.writeHead(200, {
+    "content-type": contentTypes[path.extname(file)] || "application/octet-stream",
+    "cache-control": cacheControl,
+  });
+  stream.pipe(response);
 }
 
 async function serveStatic(response, pathname) {
@@ -545,15 +600,7 @@ async function serveStatic(response, pathname) {
     json(response, 404, { error: "not found" });
     return;
   }
-  if (!(await exists(file)) || !(await stat(file)).isFile()) {
-    json(response, 404, { error: "not found" });
-    return;
-  }
-  response.writeHead(200, {
-    "content-type": contentTypes[path.extname(file)] || "application/octet-stream",
-    "cache-control": "no-cache",
-  });
-  createReadStream(file).pipe(response);
+  await streamFile(response, file, "no-cache");
 }
 
 export function createViewerServer(options) {
@@ -572,6 +619,7 @@ export function createViewerServer(options) {
   const reducing = new Map();
   const reductionChecks = new Map();
   const reductionStates = new Map();
+  const discover = createBundleDiscovery(options.traceRoot, reductionStates);
   let settingsPromise = loadSettings(options.dataRoot);
   let reviewRunChain = Promise.resolve();
   const activeAgentRuns = new Map();
@@ -647,7 +695,7 @@ export function createViewerServer(options) {
   }
 
   async function queueCompletedRawBundles() {
-    const bundles = await discoverBundles(options.traceRoot, reductionStates);
+    const bundles = await discover();
     for (const bundle of bundles) {
       if (bundle.reducedAtUnixMs || !bundle.complete || bundle.status === "reducing") continue;
       const bundleDir = safeChild(options.traceRoot, bundle.id);
@@ -666,7 +714,7 @@ export function createViewerServer(options) {
   }
 
   async function relevantReviews(bundles = null) {
-    const discovered = bundles || await discoverBundles(options.traceRoot, reductionStates);
+    const discovered = bundles || await discover();
     const dates = new Set(bundleDates(discovered));
     return (await listReviews(options.dataRoot)).filter((review) => dates.has(review.date));
   }
@@ -685,7 +733,7 @@ export function createViewerServer(options) {
 
   async function runDailyReviewNow(date = localDate(), { markScheduled = false, includeLlm = true } = {}) {
     await queueCompletedRawBundles();
-    const bundles = await discoverBundles(options.traceRoot, reductionStates);
+    const bundles = await discover();
     const dayBundles = bundles.filter((bundle) => localDate(bundle.startedAtUnixMs) === date);
     const traces = [];
     const reductionErrors = [];
@@ -895,7 +943,7 @@ export function createViewerServer(options) {
       }
       if (url.pathname === "/api/traces") {
         void queueCompletedRawBundles().catch((error) => console.error(`trace reduction queue failed: ${reductionError(error)}`));
-        json(response, 200, { traces: await discoverBundles(options.traceRoot, reductionStates) });
+        json(response, 200, { traces: await discover() });
         return;
       }
       const stateMatch = url.pathname.match(/^\/api\/traces\/([^/]+)$/);
@@ -907,7 +955,7 @@ export function createViewerServer(options) {
           json(response, 404, { error: "trace bundle not found" });
           return;
         }
-        const bundles = await discoverBundles(options.traceRoot, reductionStates);
+        const bundles = await discover();
         let bundle = bundles.find((item) => item.id === id);
         if (!bundle) {
           json(response, 404, { error: "trace bundle not found" });
@@ -917,7 +965,7 @@ export function createViewerServer(options) {
         if (shouldReduce && (bundle.needsReduction || !(await exists(statePath)))) {
           try {
             await reduceBundle(bundle, { force: true });
-            bundle = (await discoverBundles(options.traceRoot, reductionStates)).find((item) => item.id === id) || bundle;
+            bundle = (await discover()).find((item) => item.id === id) || bundle;
           } catch (error) {
             if (error?.code === "TRACE_ACTIVE") {
               json(response, 409, { error: error.message, canReduce: false, complete: false, status: "raw" });
@@ -962,11 +1010,7 @@ export function createViewerServer(options) {
           return;
         }
         const payloadFile = safeChild(bundleDir, reference.path);
-        response.writeHead(200, {
-          "content-type": contentTypes[".json"],
-          "cache-control": "no-store",
-        });
-        createReadStream(payloadFile).pipe(response);
+        await streamFile(response, payloadFile, "no-store");
         return;
       }
       await serveStatic(response, url.pathname);
@@ -992,7 +1036,7 @@ export function createViewerServer(options) {
       const settings = await settingsPromise;
       if (!settings.enabled) return;
       await queueCompletedRawBundles();
-      const bundles = await discoverBundles(options.traceRoot, reductionStates);
+      const bundles = await discover();
       const reviews = await relevantReviews(bundles);
       const reviewsByDate = new Map(reviews.map((review) => [review.date, review]));
       for (const date of bundleDates(bundles)) {

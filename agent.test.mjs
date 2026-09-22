@@ -201,7 +201,7 @@ test("Trace index detects same-size state rewrites", async (context) => {
   const first = await refreshTraceIndex({ traceRoot, dataRoot });
   await writeFile(path.join(bundle, "state.json"), stateB);
   const second = await refreshTraceIndex({ traceRoot, dataRoot });
-  assert.equal(first.schemaVersion, 2);
+  assert.equal(first.schemaVersion, 3);
   assert.equal(second.changedSessions, 1);
   assert.equal(second.sessions[0].traceId, "trace-b");
   assert.notEqual(second.cursor, first.cursor);
@@ -1026,7 +1026,7 @@ test("project AGENTS change applies only within the Run observed project set", a
 test("desktop package includes every Agent runtime module", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
   const files = new Set(packageJson.build.files);
-  for (const file of ["agent-schema.mjs", "agent-store.mjs", "trace-query.mjs", "harness-tools.mjs", "harness-mutations.mjs", "agent-engine.mjs", "agent-service.mjs", "codex-cli.mjs"]) assert.ok(files.has(file), file);
+  for (const file of ["agent-schema.mjs", "agent-store.mjs", "atomic-file.mjs", "trace-query.mjs", "harness-tools.mjs", "harness-mutations.mjs", "agent-engine.mjs", "agent-service.mjs", "codex-cli.mjs"]) assert.ok(files.has(file), file);
   assert.equal(packageJson.dependencies["smol-toml"], "^1.8.0");
 });
 

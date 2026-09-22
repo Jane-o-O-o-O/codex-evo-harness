@@ -1,17 +1,61 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import test from "node:test";
 import path from "node:path";
 
 import { fileURLToPath } from "node:url";
 
-import { createViewerServer, parseArgs, rewritePayloadForCompatibility, rewriteTraceLogForCompatibility, safeChild } from "./server.mjs";
+import { createBundleDiscovery, createViewerServer, parseArgs, rewritePayloadForCompatibility, rewriteTraceLogForCompatibility, safeChild } from "./server.mjs";
 import { localDate } from "./insights.mjs";
 import { sha256 } from "./agent-schema.mjs";
 import { createProposal, createRun, updateRun } from "./agent-store.mjs";
 
 const fixtureRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
+
+test("bundle discovery shares scans and invalidates cached summaries after state rewrites", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "trace-discovery-cache-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await cp(path.join(fixtureRoot, "sample"), path.join(root, "sample"), { recursive: true });
+  const file = path.join(root, "sample", "state.json");
+  const state = JSON.parse(await readFile(file, "utf8"));
+  state.raw_payloads.metadata = { path: "metadata.json", kind: { type: "session_metadata" } };
+  await writeFile(file, JSON.stringify(state));
+  const discover = createBundleDiscovery(root);
+  const first = discover();
+  assert.equal(discover(), first);
+  const original = await first;
+  assert.deepEqual(await discover(), original);
+  const info = await stat(file);
+  const call = Object.values(state.inference_calls)[0];
+  const model = "x".repeat(call.model.length);
+  call.model = model;
+  await writeFile(file, JSON.stringify(state));
+  await utimes(file, info.atime, info.mtime);
+  assert.equal((await stat(file)).size, info.size);
+  assert.ok((await discover())[0].models.includes(model));
+  await writeFile(path.join(root, "sample", "metadata.json"), JSON.stringify({ cwd: "/new-project" }));
+  assert.equal((await discover())[0].project, "/new-project");
+  await rm(path.join(root, "sample"), { recursive: true });
+  assert.deepEqual(await discover(), []);
+});
+
+test("missing payload files return 404 without terminating the HTTP server", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "trace-missing-payload-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const traceRoot = path.join(root, "traces");
+  await cp(path.join(fixtureRoot, "sample"), path.join(traceRoot, "sample"), { recursive: true });
+  await rm(path.join(traceRoot, "sample", "payloads", "request.json"));
+  const server = createViewerServer({ traceRoot, dataRoot: path.join(root, "data"), codexHome: path.join(root, "home"), initialReviewDelayMs: 60_000 });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const missing = await fetch(`${base}/api/traces/sample/payloads/payload-request`);
+  assert.equal(missing.status, 404);
+  assert.match((await missing.json()).error, /not found/);
+  assert.equal((await fetch(`${base}/api/traces`)).status, 200);
+  assert.equal((await fetch(`${base}/missing.js`)).status, 404);
+});
 
 test("parseArgs resolves trace root and overrides options", () => {
   const options = parseArgs([

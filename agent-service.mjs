@@ -32,6 +32,7 @@ export async function agentDashboard(context) {
     incrementalCursor: lastAnalyzedRun?.analysisCursor || null,
     incrementalSinceRunId: lastAnalyzedRun?.id || null,
     indexedSessions: index.sessions.length,
+    indexErrors: index.errors || [],
     runs,
     proposals,
     pendingCount: pending.length,

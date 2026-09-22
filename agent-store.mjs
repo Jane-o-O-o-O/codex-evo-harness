@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { writeJsonAtomic } from "./atomic-file.mjs";
+export { writeJsonAtomic } from "./atomic-file.mjs";
 
 import {
   AGENT_SCHEMA_VERSION,
@@ -259,13 +261,6 @@ export async function writeAnalysisIndex(dataRoot, name, value) {
 export function redactApproval(approval) {
   const { tokenHash, ...visible } = approval;
   return visible;
-}
-
-export async function writeJsonAtomic(file, value) {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temporary, file);
 }
 
 async function putRecord(dataRoot, collection, value) {

@@ -4,15 +4,29 @@ import path from "node:path";
 import { sha256 } from "./agent-schema.mjs";
 import { readAnalysisIndex, writeAnalysisIndex } from "./agent-store.mjs";
 
-const INDEX_SCHEMA_VERSION = 2;
+const INDEX_SCHEMA_VERSION = 3;
 const DEFAULT_PAYLOAD_LIMIT = 1_000_000;
 const DEFAULT_SEARCH_LIMIT = 100;
 
-export async function refreshTraceIndex({ traceRoot, dataRoot }) {
-  const previous = await readAnalysisIndex(dataRoot, "trace-index");
+const indexRefreshes = new Map();
+
+export function refreshTraceIndex({ traceRoot, dataRoot }) {
+  traceRoot = path.resolve(traceRoot);
+  dataRoot = path.resolve(dataRoot);
+  const key = `${dataRoot}\0${traceRoot}`;
+  if (indexRefreshes.has(key)) return indexRefreshes.get(key);
+  const pending = rebuildTraceIndex({ traceRoot, dataRoot }).finally(() => indexRefreshes.delete(key));
+  indexRefreshes.set(key, pending);
+  return pending;
+}
+
+async function rebuildTraceIndex({ traceRoot, dataRoot }) {
+  const stored = await readAnalysisIndex(dataRoot, "trace-index");
+  const previous = stored?.schemaVersion === INDEX_SCHEMA_VERSION && stored.traceRoot === traceRoot ? stored : null;
   const previousByBundle = new Map((previous?.sessions || []).map((item) => [item.bundleId, item]));
   const entries = await safeDirectoryEntries(traceRoot);
   const sessions = [];
+  const errors = [];
   let changed = 0;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -30,9 +44,14 @@ export async function refreshTraceIndex({ traceRoot, dataRoot }) {
       sessions.push(cached);
       continue;
     }
-    const state = await readJson(stateFile);
-    sessions.push(await summarizeSession(entry.name, bundleDir, state, cursor));
-    changed += 1;
+    try {
+      const state = await readJson(stateFile);
+      sessions.push(await summarizeSession(entry.name, bundleDir, state, cursor));
+      changed += 1;
+    } catch (error) {
+      // Incomplete/corrupt bundles must not prevent other sessions from being indexed.
+      errors.push({ bundleId: entry.name, code: error.code || "INVALID_STATE" });
+    }
   }
   sessions.sort((left, right) => right.startedAtUnixMs - left.startedAtUnixMs);
   const index = {
@@ -43,8 +62,11 @@ export async function refreshTraceIndex({ traceRoot, dataRoot }) {
     changedSessions: changed,
     history: buildIndexHistory(previous, sessions),
     sessions,
+    errors,
   };
-  await writeAnalysisIndex(dataRoot, "trace-index", index);
+  if (index.cursor !== previous?.cursor || JSON.stringify(errors) !== JSON.stringify(previous?.errors)) {
+    await writeAnalysisIndex(dataRoot, "trace-index", index);
+  }
   return index;
 }
 
@@ -58,9 +80,13 @@ export function traceBundleIdsSince(index, cursor) {
 }
 
 export async function listTraceSessions(context, filters = {}) {
+  const limit = boundedLimit(filters.limit, 1, 1_000, 200);
+  return (await matchingTraceSessions(context, filters)).slice(0, limit);
+}
+
+async function matchingTraceSessions(context, filters = {}) {
   const index = await currentIndex(context);
   const query = String(filters.query || "").trim().toLowerCase();
-  const limit = boundedLimit(filters.limit, 1, 1_000, 200);
   return index.sessions.filter((session) => {
     if (context.allowedBundleIds && !context.allowedBundleIds.has(session.bundleId)) return false;
     if (filters.project && session.project !== filters.project) return false;
@@ -71,7 +97,7 @@ export async function listTraceSessions(context, filters = {}) {
     if (filters.tool && !Object.keys(session.tools || {}).some((name) => toolFilterMatches(name, filters.tool))) return false;
     if (query && !`${session.firstUserMessage} ${session.project} ${session.rolloutId}`.toLowerCase().includes(query)) return false;
     return true;
-  }).slice(0, limit);
+  });
 }
 
 export async function assertTraceBundleInScope(context, bundleId) {
@@ -108,7 +134,7 @@ export async function getConversationWindow(context, input) {
 export async function searchTraces(context, input = {}) {
   const query = String(input.query || "").trim();
   if (!query) throw new Error("trace search query is required");
-  const sessions = await listTraceSessions(context, { ...input, query: "", limit: 10_000 });
+  const sessions = await matchingTraceSessions(context, { ...input, query: "" });
   const results = [];
   const limit = boundedLimit(input.limit, 1, 500, DEFAULT_SEARCH_LIMIT);
   const needle = query.toLowerCase();
@@ -162,9 +188,12 @@ export async function getTracePayload(context, input) {
   const bundleDir = safeBundle(context.traceRoot, input.bundleId);
   const file = safeDescendant(bundleDir, reference.path);
   const info = await stat(file);
-  const maxBytes = boundedLimit(input.maxBytes, 1_024, 5_000_000, context.maxPayloadBytes || DEFAULT_PAYLOAD_LIMIT);
+  const scopeLimit = boundedLimit(context.maxPayloadBytes, 1, 5_000_000, DEFAULT_PAYLOAD_LIMIT);
+  const maxBytes = Math.min(scopeLimit, boundedLimit(input.maxBytes, 1, 5_000_000, scopeLimit));
   if (info.size > maxBytes) throw new Error(`payload exceeds ${maxBytes} bytes`);
   const source = await readFile(file, "utf8");
+  const byteLength = Buffer.byteLength(source, "utf8");
+  if (byteLength > maxBytes) throw new Error(`payload exceeds ${maxBytes} bytes`);
   let value;
   try {
     value = JSON.parse(source);
@@ -175,13 +204,13 @@ export async function getTracePayload(context, input) {
     bundleId: input.bundleId,
     payloadId: input.payloadId,
     kind: reference.kind,
-    byteLength: info.size,
+    byteLength,
     value: redactSensitiveValue(value),
   };
 }
 
 export async function aggregateTraces(context, filters = {}) {
-  const sessions = await listTraceSessions(context, { ...filters, limit: 10_000 });
+  const sessions = await matchingTraceSessions(context, filters);
   const totals = { sessions: sessions.length, turns: 0, userMessages: 0, assistantMessages: 0, toolCalls: 0, failedTools: 0, cancelledTurns: 0, repeatedToolCalls: 0 };
   const projects = {};
   const tools = {};
@@ -202,7 +231,7 @@ export async function aggregateTraces(context, filters = {}) {
 }
 
 export async function findTraceFeedback(context, input = {}) {
-  const sessions = await listTraceSessions(context, { ...input, limit: 10_000 });
+  const sessions = await matchingTraceSessions(context, input);
   const output = [];
   const limit = boundedLimit(input.limit, 1, 500, 100);
   for (const session of sessions) {
@@ -246,7 +275,7 @@ export async function findTraceFeedback(context, input = {}) {
 }
 
 export async function findCancelledTurns(context, input = {}) {
-  const sessions = await listTraceSessions(context, { ...input, limit: 10_000 });
+  const sessions = await matchingTraceSessions(context, input);
   const output = [];
   const limit = boundedLimit(input.limit, 1, 500, 100);
   for (const session of sessions) {
@@ -273,16 +302,18 @@ export async function findCancelledTurns(context, input = {}) {
 
 async function currentIndex(context) {
   const existing = await readAnalysisIndex(context.dataRoot, "trace-index");
-  return existing?.schemaVersion === INDEX_SCHEMA_VERSION && existing?.traceRoot === context.traceRoot ? existing : refreshTraceIndex(context);
+  return existing?.schemaVersion === INDEX_SCHEMA_VERSION && existing?.traceRoot === path.resolve(context.traceRoot) ? existing : refreshTraceIndex(context);
 }
 
 function buildIndexHistory(previous, sessions) {
-  const history = Array.isArray(previous?.history) ? previous.history.slice(-19) : [];
+  const history = [...new Map((previous?.history || []).map((item) => [item.cursor, item])).values()];
   if (previous?.cursor && !history.some((item) => item.cursor === previous.cursor)) {
     history.push({ cursor: previous.cursor, sessionCursors: Object.fromEntries((previous.sessions || []).map((item) => [item.bundleId, item.cursor])) });
   }
   const currentCursor = sha256(sessions.map((item) => `${item.bundleId}:${item.cursor}`).join("\n"));
-  history.push({ cursor: currentCursor, sessionCursors: Object.fromEntries(sessions.map((item) => [item.bundleId, item.cursor])) });
+  if (!history.some((item) => item.cursor === currentCursor)) {
+    history.push({ cursor: currentCursor, sessionCursors: Object.fromEntries(sessions.map((item) => [item.bundleId, item.cursor])) });
+  }
   return history.slice(-20);
 }
 
@@ -328,7 +359,7 @@ async function summarizeSession(bundleId, bundleDir, state, cursor) {
     startedAtUnixMs: state.started_at_unix_ms || 0,
     endedAtUnixMs: state.ended_at_unix_ms || null,
     project: await sessionProject(bundleDir, state),
-    firstUserMessage: truncate(conversationItemText(userMessages[0]), 500),
+    firstUserMessage: redactSensitiveValueForIndex(conversationItemText(userMessages[0])),
     turns: turns.length,
     userMessages: userMessages.length,
     assistantMessages: assistantMessages.length,

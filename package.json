@@ -23,7 +23,7 @@
   "main": "desktop/main.mjs",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test server.test.mjs insights.test.mjs llm-review.test.mjs trace-detail.test.mjs agent.test.mjs",
+    "test": "node --test server.test.mjs insights.test.mjs llm-review.test.mjs trace-detail.test.mjs trace-query.test.mjs agent.test.mjs",
     "desktop": "electron .",
     "dist:win": "electron-builder --win nsis"
   },
@@ -39,6 +39,7 @@
       "llm-review.mjs",
       "agent-schema.mjs",
       "agent-store.mjs",
+      "atomic-file.mjs",
       "trace-query.mjs",
       "harness-tools.mjs",
       "harness-mutations.mjs",

@@ -1,4 +1,5 @@
-import { readFile, readdir, stat, mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, mkdir, unlink, writeFile } from "node:fs/promises";
+import { writeJsonAtomic } from "./atomic-file.mjs";
 import path from "node:path";
 
 const DAY_MS = 86_400_000;
@@ -606,11 +607,4 @@ export function renderMarkdown(report) {
     ...report.cleanupRecommendations.map((item) => `- ${item.type}: ${item.id} - ${item.reason}`), "",
   ];
   return lines.join("\n");
-}
-
-async function writeJsonAtomic(file, value) {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temporary, file);
 }
